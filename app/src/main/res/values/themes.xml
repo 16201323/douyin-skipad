@@ -1,0 +1,4 @@
+<resources>
+    <!-- AppCompatActivity 必须使用 Theme.AppCompat 系列主题，否则崩溃 -->
+    <style name="Theme.SkipAd" parent="Theme.AppCompat.Light.NoActionBar" />
+</resources>

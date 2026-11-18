@@ -1,0 +1,200 @@
+package com.example.skipad
+
+import android.app.Dialog
+import android.content.Context
+import android.graphics.Color
+import android.graphics.LinearGradient
+import android.graphics.Paint
+import android.graphics.Shader
+import android.graphics.drawable.GradientDrawable
+import android.os.Bundle
+import android.view.Gravity
+import android.view.View
+import android.widget.LinearLayout
+import android.widget.SeekBar
+import android.widget.TextView
+
+/**
+ * 颜色选择对话框（HSV 色盘）
+ *
+ * 包含三个滑块：
+ * 1. 色相 Hue (0-360)
+ * 2. 饱和度 Saturation (0-100)
+ * 3. 明度 Value (0-100)
+ * 底部实时预览当前颜色
+ */
+class ColorPickerDialog(
+    context: Context,
+    private val initialColor: Int,
+    private val onColorSelected: (Int) -> Unit
+) : Dialog(context) {
+
+    // 当前 HSV 值
+    private var hue = 0f
+    private var saturation = 1f
+    private var value = 1f
+
+    private lateinit var previewView: View
+    private lateinit var hueBar: View
+    private lateinit var satBar: View
+    private lateinit var valBar: View
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        // 从初始颜色解析 HSV
+        val hsv = FloatArray(3)
+        Color.colorToHSV(initialColor, hsv)
+        hue = hsv[0]
+        saturation = hsv[1]
+        value = hsv[2]
+
+        val layout = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(40, 40, 40, 40)
+        }
+
+        // 预览色块
+        previewView = View(context).apply {
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                120
+            ).apply { bottomMargin = 24 }
+            setBackgroundColor(initialColor)
+        }
+        layout.addView(previewView)
+
+        // 色相滑块
+        layout.addView(makeLabel("色相 Hue"))
+        hueBar = createHueBar()
+        layout.addView(hueBar)
+        layout.addView(createHueSeekBar())
+
+        // 饱和度滑块
+        layout.addView(makeLabel("饱和度 Saturation"))
+        satBar = createSatBar()
+        layout.addView(satBar)
+        layout.addView(createSatSeekBar())
+
+        // 明度滑块
+        layout.addView(makeLabel("明度 Value"))
+        valBar = createValBar()
+        layout.addView(valBar)
+        layout.addView(createValSeekBar())
+
+        // 确认按钮
+        val btn = android.widget.Button(context).apply {
+            text = "确定"
+            setOnClickListener {
+                onColorSelected(currentColor())
+                dismiss()
+            }
+        }
+        layout.addView(btn)
+
+        setContentView(layout)
+        updateBars()
+    }
+
+    private fun makeLabel(text: String) = TextView(context).apply {
+        this.text = text; textSize = 13f; setPadding(0, 16, 0, 4)
+    }
+
+    /** 当前颜色（带原 alpha） */
+    private fun currentColor(): Int {
+        val alpha = Color.alpha(initialColor)
+        val rgb = Color.HSVToColor(floatArrayOf(hue, saturation, value))
+        return Color.argb(alpha, Color.red(rgb), Color.green(rgb), Color.blue(rgb))
+    }
+
+    private fun updatePreview() {
+        previewView.setBackgroundColor(currentColor())
+        updateBars()
+    }
+
+    /** 色相条（彩虹渐变） */
+    private fun createHueBar(): View {
+        val colors = IntArray(360) { i ->
+            Color.HSVToColor(floatArrayOf(i.toFloat(), 1f, 1f))
+        }
+        return View(context).apply {
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, 30
+            ).apply { bottomMargin = 8 }
+            background = GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT, colors)
+        }
+    }
+
+    private fun createHueSeekBar(): SeekBar {
+        return SeekBar(context).apply {
+            max = 360
+            progress = hue.toInt()
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(sb: SeekBar?, progress: Int, fromUser: Boolean) {
+                    if (fromUser) { hue = progress.toFloat(); updatePreview() }
+                }
+                override fun onStartTrackingTouch(sb: SeekBar?) {}
+                override fun onStopTrackingTouch(sb: SeekBar?) {}
+            })
+        }
+    }
+
+    /** 饱和度条（灰到当前色相饱和色） */
+    private fun createSatBar(): View {
+        return View(context).apply {
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, 30
+            ).apply { bottomMargin = 8 }
+        }
+    }
+
+    private fun createSatSeekBar(): SeekBar {
+        return SeekBar(context).apply {
+            max = 100
+            progress = (saturation * 100).toInt()
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(sb: SeekBar?, progress: Int, fromUser: Boolean) {
+                    if (fromUser) { saturation = progress / 100f; updatePreview() }
+                }
+                override fun onStartTrackingTouch(sb: SeekBar?) {}
+                override fun onStopTrackingTouch(sb: SeekBar?) {}
+            })
+        }
+    }
+
+    /** 明度条（黑到当前色相） */
+    private fun createValBar(): View {
+        return View(context).apply {
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, 30
+            ).apply { bottomMargin = 8 }
+        }
+    }
+
+    private fun createValSeekBar(): SeekBar {
+        return SeekBar(context).apply {
+            max = 100
+            progress = (value * 100).toInt()
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(sb: SeekBar?, progress: Int, fromUser: Boolean) {
+                    if (fromUser) { value = progress / 100f; updatePreview() }
+                }
+                override fun onStartTrackingTouch(sb: SeekBar?) {}
+                override fun onStopTrackingTouch(sb: SeekBar?) {}
+            })
+        }
+    }
+
+    /** 更新饱和度和明度条的渐变色 */
+    private fun updateBars() {
+        val pureColor = Color.HSVToColor(floatArrayOf(hue, 1f, 1f))
+        // 饱和度条：从灰到纯色相
+        val satColors = intArrayOf(
+            Color.HSVToColor(floatArrayOf(hue, 0f, value)),
+            pureColor
+        )
+        satBar.background = GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT, satColors)
+        // 明度条：从黑到当前色相
+        val valColors = intArrayOf(Color.BLACK, Color.HSVToColor(floatArrayOf(hue, saturation, 1f)))
+        valBar.background = GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT, valColors)
+    }
+}

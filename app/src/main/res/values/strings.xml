@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">抖音跳广告助手</string>
+    <string name="accessibility_service_desc">用于查找并点击短剧 App 广告界面上的「跳过」按钮，实现自动跳过广告。仅在用户主动点击悬浮按钮或开启自动跳过时生效，不会收集任何个人信息。</string>
+</resources>
