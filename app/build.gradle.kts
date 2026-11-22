@@ -19,6 +19,8 @@ android {
     buildTypes {
         release {
             isMinifyEnabled = false
+            // 个人自用项目，release 直接复用 debug 签名，省去 keystore 配置与管理
+            signingConfig = signingConfigs.getByName("debug")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
@@ -34,9 +36,21 @@ android {
     kotlinOptions {
         jvmTarget = "17"
     }
+
+    // APK 输出文件命名：统一用项目名 douyin-skipad，便于识别与分发
+    // （用户要求：apk 名称更名为项目名称）release → douyin-skipad-release.apk，debug → douyin-skipad-debug.apk
+    applicationVariants.all {
+        val variant = this
+        outputs.all {
+            val outputImpl = this as com.android.build.gradle.internal.api.ApkVariantOutputImpl
+            outputImpl.outputFileName = "douyin-skipad-${variant.buildType.name}.apk"
+        }
+    }
 }
 
 dependencies {
     // AppCompat（用于 AppCompatActivity）
     implementation("androidx.appcompat:appcompat:1.7.0")
+    // 图片裁剪库（CanHub 维护的 uCrop 活跃分支）：悬浮窗图片模式的自由框选裁剪
+    implementation("com.vanniktech:android-image-cropper:4.7.0")
 }

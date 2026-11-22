@@ -186,14 +186,14 @@ class ColorPickerDialog(
 
     /** 更新饱和度和明度条的渐变色 */
     private fun updateBars() {
-        val pureColor = Color.HSVToColor(floatArrayOf(hue, 1f, 1f))
-        // 饱和度条：从灰到纯色相
+        // 饱和度条：左端 = 当前明度下的灰色（hue,0,value），右端 = 当前明度下的满饱和色（hue,1,value）
+        // 右端必须带当前 value，旧代码用满明度 pureColor(hue,1,1)，当 value<1 时色条右端与预览色块不一致
         val satColors = intArrayOf(
             Color.HSVToColor(floatArrayOf(hue, 0f, value)),
-            pureColor
+            Color.HSVToColor(floatArrayOf(hue, 1f, value))
         )
         satBar.background = GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT, satColors)
-        // 明度条：从黑到当前色相
+        // 明度条：左端 = 黑（value=0），右端 = 当前饱和度下满明度（hue,saturation,1），滑块位置对应当前 value
         val valColors = intArrayOf(Color.BLACK, Color.HSVToColor(floatArrayOf(hue, saturation, 1f)))
         valBar.background = GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT, valColors)
     }

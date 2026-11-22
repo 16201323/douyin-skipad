@@ -33,18 +33,27 @@ class SkipAdAccessibilityService : AccessibilityService() {
         /**
          * 获取当前前台应用包名
          * 优先通过 rootInActiveWindow 实时获取
+         *
+         * 【诊断日志说明】本轮仅加日志、不改逻辑：
+         * 分别打印 rootInActiveWindow 的实时取值与缓存值，用于验证以下假设：
+         * - 现象2（切到桌面/其他app仍显示）：实时取值是否仍返回本app、或回退到过时缓存
+         * - 现象5（切回抖音不显示）：实时取值/缓存是否仍停留在非目标包名
          */
         fun getForegroundPackage(): String? {
+            var realtimePkg: String? = null
             try {
                 val rootNode = instance?.rootInActiveWindow
-                val pkg = rootNode?.packageName?.toString()
-                if (!pkg.isNullOrEmpty()) {
-                    foregroundPackage = pkg
-                    return pkg
+                realtimePkg = rootNode?.packageName?.toString()
+                if (!realtimePkg.isNullOrEmpty()) {
+                    foregroundPackage = realtimePkg
+                    Log.d(TAG, "getForegroundPackage: 实时取值=$realtimePkg, 缓存=$foregroundPackage")
+                    return realtimePkg
                 }
             } catch (e: Exception) {
-                // 忽略异常，回退到缓存值
+                Log.w(TAG, "getForegroundPackage: rootInActiveWindow 异常: ${e.message}")
             }
+            // 实时取不到（null 或异常）→ 回退缓存，并打印对比，便于判断缓存是否过时
+            Log.d(TAG, "getForegroundPackage: 实时为空/异常, 回退缓存=$foregroundPackage")
             return foregroundPackage
         }
 
@@ -99,9 +108,16 @@ class SkipAdAccessibilityService : AccessibilityService() {
             AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED,
             AccessibilityEvent.TYPE_WINDOWS_CHANGED -> {
                 val pkg = event.packageName?.toString()
+                // 【诊断日志】打印事件类型与旧→新包名，验证事件流是否正确覆盖了每次前台切换
+                val typeName = when (event.eventType) {
+                    AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED -> "STATE_CHANGED"
+                    AccessibilityEvent.TYPE_WINDOWS_CHANGED -> "WINDOWS_CHANGED"
+                    else -> event.eventType.toString()
+                }
                 if (!pkg.isNullOrEmpty() && foregroundPackage != pkg) {
+                    val old = foregroundPackage
                     foregroundPackage = pkg
-                    Log.d(TAG, "前台应用切换: $pkg")
+                    Log.d(TAG, "前台应用切换[$typeName]: $old -> $pkg")
                 }
             }
         }
@@ -138,10 +154,16 @@ class SkipAdAccessibilityService : AccessibilityService() {
         }
         try {
             // 广告关键词列表（按优先级排序）
+            // 注意：文案必须与抖音实际显示完全一致（子串包含匹配），否则永远匹配不上。
+            // 截图实证：可上滑时显示"上滑继续观看短剧"，倒计时中显示"X 秒后可继续看下一集"。
             val adKeywords = listOf(
-                "上滑继续看短剧",
-                "秒后可继续上滑看剧",
+                "上滑继续观看短剧",   // 可上滑跳过（截图真实文案，含"观"字）
+                "上滑继续看短剧",     // 兼容部分版本的旧文案
+                "秒后可继续看下一集", // 倒计时中（截图真实文案）
+                "秒后可继续上滑看剧", // 兼容部分版本
                 "倒计时结束后可滑动",
+                "免广告",             // 直播间/商品引流广告：顶部"免广告"入口，正常播放页无此文案
+                "查看详情",           // 直播间/商品引流广告：底部红色按钮，正常短剧页无此按钮
                 "广告"
             )
 

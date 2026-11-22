@@ -32,6 +32,10 @@ object AdDataLogger {
     private const val TAG = "SkipAd_DataLogger"
     private const val LOG_FILE_NAME = "ad_data.jsonl"
 
+    // 单线程写入器：log() 可能在主线程被调用（悬浮窗 1 秒轮询），
+    // 磁盘 I/O 放到子线程执行，避免阻塞主线程导致 ANR
+    private val writeExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
+
     /**
      * 获取日志文件路径
      */
@@ -112,13 +116,19 @@ object AdDataLogger {
             }
             json.put("sessions", sessionsArray)
 
-            // 追加写入文件
+            // 追加写入文件（放到子线程，避免主线程磁盘 I/O 阻塞）
             val file = getLogFile(context)
-            file.appendText(json.toString() + "\n")
-
-            // 限制文件大小，超过 10MB 则清空重写（避免占满存储）
-            if (file.length() > 10 * 1024 * 1024) {
-                file.writeText(json.toString() + "\n")
+            val line = json.toString() + "\n"
+            writeExecutor.execute {
+                try {
+                    file.appendText(line)
+                    // 限制文件大小，超过 10MB 则清空重写（避免占满存储）
+                    if (file.length() > 10 * 1024 * 1024) {
+                        file.writeText(line)
+                    }
+                } catch (e: Exception) {
+                    Log.e(TAG, "写入日志文件失败: ${e.message}")
+                }
             }
 
             if (eventType == "click_skip") {

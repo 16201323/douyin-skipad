@@ -13,9 +13,15 @@
     <!-- 悬浮窗权限：显示悬浮按钮 -->
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
 
-    <!-- Android 12+ 前台服务类型 -->
+    <!-- 使用情况访问权限：用于检测当前前台应用，替代无障碍服务做前台判断。
+         需用户在系统设置中手动授权「使用情况访问」，无法运行时动态申请。 -->
+    <uses-permission android:name="android.permission.PACKAGE_USAGE_STATS"
+        tools:ignore="ProtectedPermissions" />
+
+    <!-- 前台服务权限：悬浮窗需以前台服务方式运行，避免被系统回收 -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+    <!-- Android 14+ specialUse 类型：悬浮窗不属于媒体播放等标准类型，用 specialUse 并在 service 标签内声明用途 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
 
     <application
         android:allowBackup="true"
@@ -52,11 +58,21 @@
             </intent-filter>
         </service>
 
-        <!-- 悬浮按钮服务：显示一个可点击的悬浮窗 -->
+        <!-- 悬浮按钮服务：显示一个可点击的悬浮窗；使用 specialUse 前台服务类型（非媒体播放） -->
         <service
             android:name=".FloatingButtonService"
             android:exported="false"
-            android:foregroundServiceType="mediaPlayback" />
+            android:foregroundServiceType="specialUse">
+            <!-- Android 14 要求 specialUse 类型必须声明用途说明 -->
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="悬浮窗：在其他应用上层持续显示广告跳过按钮，供用户点击跳过" />
+        </service>
+
+        <!-- 图片裁剪库的裁剪 Activity：悬浮窗图片模式选图后进入此界面自由框选裁剪 -->
+        <activity
+            android:name="com.canhub.cropper.CropImageActivity"
+            android:theme="@style/Base.Theme.AppCompat" />
 
         <!--
           无障碍服务：广告跳过的通用方案
