@@ -1,5 +1,7 @@
 # 抖音短剧广告跳过助手
 
+> 仅支持 **Android** 系统（Android 7.0 及以上），不支持 iOS / 鸿蒙独立应用。
+
 一个 Android 悬浮窗工具：在抖音短剧播放时，**手动点击**或**自动检测**跳过广告。
 
 ## 开发起源
@@ -51,7 +53,7 @@
 
 - **语言**：Kotlin
 - **构建**：Gradle (Kotlin DSL)，JDK 17
-- **minSdk**：26（Android 8.0）
+- **minSdk**：24（Android 7.0）
 
 ### 核心组件
 
