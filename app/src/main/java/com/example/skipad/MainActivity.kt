@@ -20,6 +20,14 @@ import android.widget.LinearLayout
 import android.widget.SeekBar
 import android.widget.TextView
 import android.widget.Toast
+import android.widget.FrameLayout
+import android.widget.ScrollView
+import android.widget.CompoundButton
+import android.content.res.Configuration
+import android.content.res.ColorStateList
+import android.os.Handler
+import android.os.Looper
+import androidx.appcompat.widget.SwitchCompat
 import android.app.ActivityManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -28,6 +36,7 @@ import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
+import androidx.appcompat.app.AppCompatDelegate
 import com.canhub.cropper.CropImageContract
 import com.canhub.cropper.CropImageContractOptions
 import com.canhub.cropper.CropImageOptions
@@ -48,13 +57,35 @@ import java.io.FileOutputStream
 class MainActivity : AppCompatActivity() {
 
     private lateinit var config: ConfigManager
+    private lateinit var ui: AppUi
+    private lateinit var pageHost: FrameLayout
+    private lateinit var navigation: LinearLayout
+    private var selectedPage = 0
+    private var draftButtonText: String? = null
+    private var floatingPreview: FloatingView? = null
+    private var imageOptions: View? = null
+    private var statusTitle: TextView? = null
+    private var statusDetail: TextView? = null
+    private var statusBadge: TextView? = null
+    private var serviceToggle: Button? = null
+    private var todayCountView: TextView? = null
+    private var weekCountView: TextView? = null
+    private var readinessText: TextView? = null
+    private val permissionRefreshers = mutableListOf<() -> Unit>()
+    private val uiHandler = Handler(Looper.getMainLooper())
+    private val statusTick = object : Runnable {
+        override fun run() {
+            refreshRuntimeUi()
+            uiHandler.postDelayed(this, 1500L)
+        }
+    }
     private var waitingForNotificationPermission = false
     private var waitingForOverlayPermission = false
     private var waitingForUsageStatsPermission = false
     private var waitingForAccessibilityPermission = false
 
     // 自动跳过复选框（成员变量，便于从设置返回后刷新状态）
-    private var autoSkipCheckBox: CheckBox? = null
+    private var autoSkipCheckBox: CompoundButton? = null
     // 跳过统计展示（成员变量，便于 onResume 时刷新最新数字）
     private var statsView: TextView? = null
     // 权限状态展示（成员变量，从系统设置返回后需立即刷新，否则一直显示旧的 ❌）
@@ -90,8 +121,12 @@ class MainActivity : AppCompatActivity() {
     )
 
     override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
         config = ConfigManager.get(this)
+        AppCompatDelegate.setDefaultNightMode(config.themeMode)
+        super.onCreate(savedInstanceState)
+        ui = AppUi(this)
+        selectedPage = savedInstanceState?.getInt("selected_page", 0) ?: 0
+        draftButtonText = savedInstanceState?.getString("draft_button_text")
 
         // 注册选图 / 裁剪的 Activity Result launcher（必须在 onCreate 完成注册，buildUI 会用到）
         pickImageLauncher = registerForActivityResult(ActivityResultContracts.GetContent()) { uri ->
@@ -110,7 +145,11 @@ class MainActivity : AppCompatActivity() {
         refreshStatsView()
         // 从系统设置返回，刷新权限状态（否则无障碍已开却仍显示 ❌）
         refreshPermissionStatus()
-        checkAndProceed()
+        // 首页展示缺少的权限；只有用户点击启动才进入授权引导。
+        if (config.floatingEnabled && isNotificationListenerEnabled() && canDrawOverlays() &&
+            (hasUsageStatsPermission() || SkipAdAccessibilityService.isRunning()) && !isFloatingServiceRunning()) {
+            startFloatingButton()
+        }
         // 从无障碍设置返回后，如果用户之前想开启自动跳过且无障碍已开，自动勾选
         if (pendingAutoSkip && isAccessibilityServiceEnabled()) {
             pendingAutoSkip = false
@@ -128,6 +167,25 @@ class MainActivity : AppCompatActivity() {
             cb.isChecked = config.autoSkip
             cb.setOnCheckedChangeListener(autoSkipListener)
         }
+        refreshRuntimeUi()
+        uiHandler.removeCallbacks(statusTick)
+        uiHandler.postDelayed(statusTick, 1500L)
+    }
+
+    override fun onPause() {
+        uiHandler.removeCallbacks(statusTick)
+        super.onPause()
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        outState.putInt("selected_page", selectedPage)
+        draftButtonText?.let { outState.putString("draft_button_text", it) }
+        super.onSaveInstanceState(outState)
+    }
+
+    override fun onDestroy() {
+        uiHandler.removeCallbacksAndMessages(null)
+        super.onDestroy()
     }
 
     /**
@@ -137,6 +195,7 @@ class MainActivity : AppCompatActivity() {
      * - 无障碍服务不在这里强制引导，只有用户开启「自动跳过」时才检查。
      */
     private fun checkAndProceed() {
+        if (!config.floatingEnabled) return
         when {
             !isNotificationListenerEnabled() -> {
                 if (!waitingForNotificationPermission) {
@@ -159,14 +218,14 @@ class MainActivity : AppCompatActivity() {
                     ) { openOverlaySettings() }
                 }
             }
-            !hasUsageStatsPermission() -> {
+            !hasUsageStatsPermission() && !SkipAdAccessibilityService.isRunning() -> {
                 waitingForNotificationPermission = false
                 waitingForOverlayPermission = false
                 if (!waitingForUsageStatsPermission) {
                     waitingForUsageStatsPermission = true
                     showPermissionDialog(
                         "需要开启「使用情况访问」",
-                        "需要读取前台应用信息，才能让悬浮窗只在本应用和抖音中显示、在其他界面自动隐藏。\n\n请在接下来的页面中，找到「抖音跳广告助手」并开启开关。",
+                        "手动跳过时需要确认当前正在使用的应用，避免控制后台播放器。若已启用无障碍服务则不需要此权限。\n\n请在接下来的页面中，找到「抖音跳广告助手」并开启开关。",
                         "去开启"
                     ) { openUsageAccessSettings() }
                 }
@@ -175,7 +234,7 @@ class MainActivity : AppCompatActivity() {
                 waitingForNotificationPermission = false
                 waitingForOverlayPermission = false
                 waitingForUsageStatsPermission = false
-                // 所有权限就绪后，若悬浮窗服务未运行则自动启动（打开 App 默认显示悬浮窗）
+                // 仅恢复用户期望的运行状态，主动停止后不自动重启。
                 if (!isFloatingServiceRunning()) {
                     startFloatingButton()
                 }
@@ -185,7 +244,8 @@ class MainActivity : AppCompatActivity() {
 
     private fun isNotificationListenerEnabled(): Boolean {
         val enabled = Settings.Secure.getString(contentResolver, "enabled_notification_listeners")
-        return enabled?.contains(packageName) == true
+        val component = android.content.ComponentName(this, MediaControlService::class.java)
+        return enabled?.split(':')?.any { android.content.ComponentName.unflattenFromString(it) == component } == true
     }
 
     private fun canDrawOverlays(): Boolean {
@@ -230,7 +290,8 @@ class MainActivity : AppCompatActivity() {
      */
     private fun isAccessibilityServiceEnabled(): Boolean {
         val enabled = Settings.Secure.getString(contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES)
-        return enabled?.contains(packageName) == true
+        val component = android.content.ComponentName(this, SkipAdAccessibilityService::class.java)
+        return enabled?.split(':')?.any { android.content.ComponentName.unflattenFromString(it) == component } == true
     }
 
     /**
@@ -256,197 +317,419 @@ class MainActivity : AppCompatActivity() {
      * 构建完整界面
      */
     private fun buildUI() {
-        val scroll = android.widget.ScrollView(this)
-        val layout = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(32, 32, 32, 32)
+        window.statusBarColor = ui.background
+        window.navigationBarColor = ui.surface
+        val night = resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK == Configuration.UI_MODE_NIGHT_YES
+        var flags = window.decorView.systemUiVisibility
+        flags = if (night) flags and View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR.inv() else flags or View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR
+        if (Build.VERSION.SDK_INT >= 26) flags = if (night) flags and View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR.inv()
+            else flags or View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
+        window.decorView.systemUiVisibility = flags
+        val shell = ui.column().apply { setBackgroundColor(ui.background) }
+        val toolbar = ui.row().apply { setPadding(ui.dp(22), ui.dp(18), ui.dp(22), ui.dp(12)) }
+        toolbar.addView(ui.icon(R.drawable.ic_skip, size = 22))
+        toolbar.addView(ui.label("抖音跳广告助手", 14f, medium = true),
+            LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = ui.dp(10) })
+        toolbar.addView(ui.badge("本地工具"))
+        shell.addView(toolbar)
+        pageHost = FrameLayout(this)
+        shell.addView(pageHost, LinearLayout.LayoutParams(-1, 0, 1f))
+        navigation = ui.row().apply {
+            setPadding(ui.dp(14), ui.dp(8), ui.dp(14), ui.dp(8))
+            setBackgroundColor(ui.surface)
         }
+        shell.addView(navigation, LinearLayout.LayoutParams(-1, -2))
+        setContentView(shell)
+        showPage(selectedPage)
+    }
 
-        // === 标题 ===
-        layout.addView(makeTitle("抖音短剧跳广告助手"))
-
-        // === 跳过统计（今日 / 本周）===
-        layout.addView(makeSectionTitle("跳过统计"))
-        statsView = TextView(this).apply {
-            text = buildStatsText()
-            textSize = 15f
-            setPadding(0, 8, 0, 16)
+    private fun showPage(index: Int) {
+        selectedPage = index.coerceIn(0, 2)
+        autoSkipCheckBox = null
+        floatingPreview = null
+        imagePreview = null
+        imageOptions = null
+        statusTitle = null; statusDetail = null; statusBadge = null; serviceToggle = null
+        todayCountView = null; weekCountView = null; readinessText = null
+        permissionRefreshers.clear()
+        pageHost.removeAllViews()
+        val scroll = ScrollView(this).apply { isFillViewport = true; isVerticalScrollBarEnabled = false }
+        val content = ui.column().apply { setPadding(ui.dp(20), ui.dp(8), ui.dp(20), ui.dp(12)) }
+        when (selectedPage) {
+            0 -> buildHome(content)
+            1 -> buildAppearance(content)
+            else -> buildSettings(content)
         }
-        layout.addView(statsView)
+        scroll.addView(content)
+        pageHost.addView(scroll, FrameLayout.LayoutParams(-1, -1))
+        buildNavigation()
+        refreshRuntimeUi()
+    }
 
-        // === 权限状态 ===
-        layout.addView(makeSectionTitle("权限状态"))
-        permStatusView = TextView(this).apply {
-            text = buildPermissionStatus()
-            textSize = 13f
-            setPadding(0, 8, 0, 8)
-        }
-        layout.addView(permStatusView)
-
-        // 「去开启无障碍」按钮：自动跳过依赖无障碍，ColorOS 容易偷偷关掉，
-        // 给个直达入口，避免用户在设置里翻半天找不到。
-        layout.addView(android.widget.Button(this).apply {
-            text = "去开启无障碍服务"
-            setOnClickListener {
-                try {
-                    // 直接跳到系统无障碍设置页
-                    startActivity(android.content.Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
-                } catch (e: Exception) {
-                    Toast.makeText(this@MainActivity, "无法打开设置，请手动前往：设置→无障碍", Toast.LENGTH_LONG).show()
-                }
+    private fun buildNavigation() {
+        navigation.removeAllViews()
+        val names = listOf("首页", "悬浮窗", "设置")
+        val tags = listOf("nav_home", "nav_appearance", "nav_settings")
+        val icons = listOf(R.drawable.ic_home, R.drawable.ic_floating, R.drawable.ic_settings)
+        for (index in names.indices) {
+            val active = index == selectedPage
+            val item = ui.column().apply {
+                gravity = Gravity.CENTER
+                tag = tags[index]
+                contentDescription = names[index]
+                isSelected = active
+                isClickable = true
+                isFocusable = true
+                minimumHeight = ui.dp(58)
+                if (active) background = ui.rounded(ui.accentSoft, 18)
+                setPadding(ui.dp(8), ui.dp(7), ui.dp(8), ui.dp(7))
+                setOnClickListener { if (selectedPage != index) showPage(index) }
             }
-        })
-
-        // === 悬浮窗样式 ===
-        layout.addView(makeSectionTitle("悬浮窗样式"))
-
-        // 颜色选择
-        layout.addView(makeLabel("按钮颜色"))
-        layout.addView(createColorPicker())
-
-        // 透明度
-        layout.addView(makeLabel("透明度: ${config.buttonAlpha * 100 / 255}%"))
-        layout.addView(createSeekBar(config.buttonAlpha, 255) { value ->
-            config.buttonAlpha = value
-            refreshFloatingButton()
-        })
-
-        // 大小
-        layout.addView(makeLabel("按钮大小: ${config.buttonSize}dp"))
-        layout.addView(createSeekBar(config.buttonSize, 120, 36) { value ->
-            config.buttonSize = value
-            refreshFloatingButton()
-        })
-
-        // 形状
-        layout.addView(makeLabel("形状"))
-        layout.addView(createShapeSelector())
-
-        // 内容模式（文字 / 图片）
-        layout.addView(makeLabel("内容"))
-        layout.addView(createContentModeSelector())
-
-        // 图片区（图片模式下选图、预览、清除）
-        layout.addView(createImageSection())
-
-        // 文字（图片模式下作为叠加文字，留空则纯图片）
-        layout.addView(makeLabel("按钮文字（图片模式可留空）"))
-        layout.addView(createTextEditor())
-
-        // 文字大小
-        layout.addView(makeLabel("文字大小: ${config.textSize.toInt()}sp"))
-        layout.addView(createSeekBar(config.textSize.toInt(), 24, 8) { value ->
-            config.textSize = value.toFloat()
-            refreshFloatingButton()
-        })
-
-        // === 支持的 App ===
-        layout.addView(makeSectionTitle("支持的 App"))
-        layout.addView(createAppSelector())
-
-        // === 自动跳过 ===
-        layout.addView(makeSectionTitle("自动跳过"))
-        val autoSkipCb = CheckBox(this).apply {
-            text = "开启后，广告出现时自动跳过（需开启无障碍服务）"
-            isChecked = config.autoSkip
-            textSize = 13f
+            item.addView(ui.icon(icons[index], if (active) ui.accent else ui.secondary, 22))
+            item.addView(ui.label(names[index], 11f, if (active) ui.accent else ui.secondary, active).apply {
+                gravity = Gravity.CENTER
+                setPadding(0, ui.dp(5), 0, 0)
+                importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+            })
+            navigation.addView(item, LinearLayout.LayoutParams(0, -2, 1f).apply {
+                marginStart = ui.dp(4); marginEnd = ui.dp(4)
+            })
         }
-        autoSkipCheckBox = autoSkipCb
-        // 防止取消勾选时递归触发监听器
-        var autoSkipResetting = false
-        autoSkipListener = android.widget.CompoundButton.OnCheckedChangeListener { _, checked ->
-            if (autoSkipResetting) return@OnCheckedChangeListener
+    }
+
+    private fun heading(parent: LinearLayout, title: String, description: String) {
+        parent.addView(ui.label(title, 27f, medium = true))
+        parent.addView(ui.space(8))
+        parent.addView(ui.label(description, 13f, ui.secondary))
+        parent.addView(ui.space(24))
+    }
+
+    private fun cardTitle(card: LinearLayout, title: String, description: String? = null) {
+        card.addView(ui.label(title, 16f, medium = true))
+        if (description != null) {
+            card.addView(ui.space(6))
+            card.addView(ui.label(description, 12f, ui.secondary))
+        }
+        card.addView(ui.space(16))
+    }
+
+    private fun buildHome(parent: LinearLayout) {
+        heading(parent, "追剧，更从容。", "少些打扰，把时间留给喜欢的故事。")
+        val hero = ui.card(ui.hero)
+        val top = ui.row()
+        statusBadge = ui.badge("尚未启动", false)
+        top.addView(statusBadge)
+        top.addView(View(this), LinearLayout.LayoutParams(0, 1, 1f))
+        top.addView(ui.icon(R.drawable.ic_skip, size = 32))
+        hero.addView(top)
+        hero.addView(ui.space(18))
+        statusTitle = ui.label("准备好再出发", 23f, medium = true)
+        statusDetail = ui.label("开启悬浮窗，轻点按钮即可发送跳过请求。", 13f, ui.secondary)
+        hero.addView(statusTitle)
+        hero.addView(ui.space(9))
+        hero.addView(statusDetail)
+        hero.addView(ui.space(20))
+        serviceToggle = ui.button("开启悬浮窗", true) {
+            if (isFloatingServiceRunning()) stopFloatingButton() else startFloatingButton()
+            refreshRuntimeUi()
+            uiHandler.postDelayed({ refreshRuntimeUi() }, 300L)
+        }.apply { tag = "service_toggle" }
+        hero.addView(serviceToggle, LinearLayout.LayoutParams(-1, -2))
+        parent.addView(hero)
+
+        val stats = ui.card()
+        val statsTitle = ui.row()
+        statsTitle.addView(ui.label("已确认跳过", 14f, medium = true), LinearLayout.LayoutParams(0, -2, 1f))
+        statsTitle.addView(ui.label("每一次，少点等待", 11f, ui.secondary))
+        stats.addView(statsTitle)
+        stats.addView(ui.space(18))
+        val values = ui.row()
+        fun metric(title: String): Pair<LinearLayout, TextView> {
+            val column = ui.column()
+            val value = ui.label("0", 34f, medium = true)
+            column.addView(value)
+            column.addView(ui.space(5))
+            column.addView(ui.label(title, 12f, ui.secondary))
+            return column to value
+        }
+        val today = metric("今日 · 条"); val week = metric("本周 · 条")
+        todayCountView = today.second; weekCountView = week.second
+        values.addView(today.first, LinearLayout.LayoutParams(0, -2, 1f))
+        values.addView(View(this).apply { setBackgroundColor(ui.line) },
+            LinearLayout.LayoutParams(ui.dp(1), ui.dp(48)).apply { marginEnd = ui.dp(24) })
+        values.addView(week.first, LinearLayout.LayoutParams(0, -2, 1f))
+        stats.addView(values)
+        parent.addView(stats)
+
+        val automatic = ui.card()
+        val row = ui.row()
+        val words = ui.column()
+        words.addView(ui.label("自动跳过", 16f, medium = true))
+        words.addView(ui.space(5))
+        words.addView(ui.label("识别到短剧广告后自动发送跳过请求", 12f, ui.secondary))
+        row.addView(words, LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = ui.dp(12) })
+        val toggle = SwitchCompat(this).apply {
+            isChecked = config.autoSkip
+            contentDescription = "自动跳过"
+            minimumHeight = ui.dp(48)
+            buttonTintList = ColorStateList.valueOf(ui.accent)
+        }
+        autoSkipCheckBox = toggle
+        autoSkipListener = CompoundButton.OnCheckedChangeListener { _, checked ->
             if (checked && !isAccessibilityServiceEnabled()) {
-                // 开启自动跳过时需要无障碍服务，未开启则引导并取消勾选
                 config.autoSkip = false
-                pendingAutoSkip = true  // 标记：等待用户开启无障碍后自动勾选
-                autoSkipResetting = true
-                autoSkipCb.isChecked = false
-                autoSkipResetting = false
-                showPermissionDialog(
-                    "需要开启「无障碍服务」",
-                    "自动跳过功能需要无障碍服务来检测广告界面。\n\n请在接下来的页面中，找到「抖音跳广告助手」并开启开关。",
-                    "去开启"
-                ) { openAccessibilitySettings() }
+                pendingAutoSkip = true
+                toggle.setOnCheckedChangeListener(null)
+                toggle.isChecked = false
+                toggle.setOnCheckedChangeListener(autoSkipListener)
+                showPermissionDialog("开启自动跳过", "请先在系统设置中开启本应用的无障碍服务，用于识别广告界面。", "去设置") {
+                    openAccessibilitySettings()
+                }
             } else {
                 pendingAutoSkip = false
                 config.autoSkip = checked
-                Toast.makeText(this@MainActivity, if (checked) "自动跳过已开启" else "自动跳过已关闭", Toast.LENGTH_SHORT).show()
             }
+            refreshRuntimeUi()
         }
-        autoSkipCb.setOnCheckedChangeListener(autoSkipListener)
-        layout.addView(autoSkipCb)
+        toggle.setOnCheckedChangeListener(autoSkipListener)
+        row.addView(toggle)
+        automatic.addView(row)
+        parent.addView(automatic)
 
-        // 广告检测间隔：用户可调节前台检测 / 广告识别的轮询频率，值越小响应越快但越耗电。
-        // 范围 200~2000ms，默认 500ms；FloatingButtonService 每轮轮询都读取此值，改完即时生效。
-        val intervalLabel = makeLabel("广告检测间隔: ${config.detectIntervalMs}ms")
-        layout.addView(intervalLabel)
-        layout.addView(createSeekBar(config.detectIntervalMs, 2000, 200) { value ->
-            config.detectIntervalMs = value
-            intervalLabel.text = "广告检测间隔: ${value}ms"   // 拖动时实时刷新显示
-        })
-
-        // === 控制按钮 ===
-        layout.addView(makeSectionTitle("控制"))
-        layout.addView(makeButton("启动悬浮按钮") { startFloatingButton() })
-        layout.addView(makeButton("停止悬浮按钮") { stopFloatingButton() })
-
-        scroll.addView(layout)
-        setContentView(scroll)
+        val readiness = ui.card()
+        val readinessHeader = ui.row()
+        readinessHeader.addView(ui.label("运行准备", 14f, medium = true), LinearLayout.LayoutParams(0, -2, 1f))
+        readinessHeader.addView(ui.button("查看权限") { showPage(2) })
+        readiness.addView(readinessHeader)
+        readinessText = ui.label("", 12f, ui.secondary)
+        readiness.addView(ui.space(9)); readiness.addView(readinessText)
+        parent.addView(readiness)
+        parent.addView(ui.label("轻点跳过 · 长按收起 · 拖动调整位置", 12f, ui.secondary).apply { gravity = Gravity.CENTER })
+        parent.addView(ui.space(10))
     }
 
-    // ===== UI 构造辅助方法 =====
+    private fun buildAppearance(parent: LinearLayout) {
+        heading(parent, "你的悬浮窗。", "把常用的按钮，调成喜欢的样子。")
+        val previewCard = ui.card()
+        cardTitle(previewCard, "实时预览", "调整下方选项，即可查看实际样式。")
+        val stage = FrameLayout(this).apply { background = ui.rounded(ui.surfaceAlt, 18) }
+        floatingPreview = FloatingView(this).apply { tag = "floating_preview"; contentDescription = "悬浮窗样式预览" }
+        val size = ui.dp(config.buttonSize)
+        stage.addView(floatingPreview, FrameLayout.LayoutParams(size, size, Gravity.CENTER))
+        previewCard.addView(stage, LinearLayout.LayoutParams(-1, ui.dp(164)))
+        previewCard.addView(ui.space(10))
+        previewCard.addView(ui.label("仅样式预览，不会触发跳过", 11f, ui.secondary).apply { gravity = Gravity.CENTER })
+        parent.addView(previewCard)
 
-    private fun makeTitle(text: String) = TextView(this).apply {
-        this.text = text; textSize = 22f; setPadding(0, 0, 0, 16)
+        val content = ui.card()
+        cardTitle(content, "显示内容")
+        content.addView(createContentModeSelector())
+        content.addView(ui.space(14))
+        content.addView(ui.label("按钮文字", 12f, ui.secondary))
+        content.addView(ui.space(7))
+        content.addView(createTextEditor())
+        imageOptions = createImageSection().apply { visibility = if (config.contentMode == ConfigManager.CONTENT_IMAGE) View.VISIBLE else View.GONE }
+        content.addView(imageOptions)
+        parent.addView(content)
+
+        val shape = ui.card()
+        cardTitle(shape, "形状与颜色")
+        shape.addView(createShapeSelector())
+        shape.addView(ui.space(18))
+        shape.addView(createColorPicker())
+        parent.addView(shape)
+
+        val dimensions = ui.card()
+        cardTitle(dimensions, "尺寸与质感")
+        addSlider(dimensions, "按钮大小", config.buttonSize, 36, 120, { "${it} dp" }) {
+            config.buttonSize = it; refreshFloatingButton()
+        }
+        addSlider(dimensions, "不透明度", config.buttonAlpha, 0, 255, { "${it * 100 / 255}%" }) {
+            config.buttonAlpha = it; refreshFloatingButton()
+        }
+        addSlider(dimensions, "文字大小", config.textSize.toInt(), 8, 24, { "${it} sp" }) {
+            config.textSize = it.toFloat(); refreshFloatingButton()
+        }
+        parent.addView(dimensions)
     }
 
-    private fun makeSectionTitle(text: String) = TextView(this).apply {
-        this.text = text; textSize = 16f; setPadding(0, 24, 0, 8)
-        setTextColor(0xFF333333.toInt())
+    private fun buildSettings(parent: LinearLayout) {
+        heading(parent, "按你的节奏。", "管理应用、权限与运行偏好。")
+        val appearance = ui.card()
+        cardTitle(appearance, "界面主题", "选择后立即生效，下次打开会保留。")
+        val choices = ui.row()
+        val themeButtons = mutableListOf<Pair<Int, Button>>()
+        for ((mode, title) in listOf(
+            AppCompatDelegate.MODE_NIGHT_FOLLOW_SYSTEM to "跟随系统",
+            AppCompatDelegate.MODE_NIGHT_NO to "浅色",
+            AppCompatDelegate.MODE_NIGHT_YES to "深色")) {
+            val button = ui.button(title, config.themeMode == mode) {
+                config.themeMode = mode
+                themeButtons.forEach { (value, view) ->
+                    view.isSelected = value == mode
+                    ui.styleButton(view, value == mode)
+                    view.textSize = 12f
+                    view.setPadding(ui.dp(6), ui.dp(10), ui.dp(6), ui.dp(10))
+                }
+                AppCompatDelegate.setDefaultNightMode(mode)
+            }.apply {
+                tag = "theme_$mode"
+                isSelected = config.themeMode == mode
+                textSize = 12f
+                setPadding(ui.dp(6), ui.dp(10), ui.dp(6), ui.dp(10))
+            }
+            themeButtons.add(mode to button)
+            choices.addView(button, LinearLayout.LayoutParams(0, -2, 1f).apply {
+                if (mode != AppCompatDelegate.MODE_NIGHT_FOLLOW_SYSTEM) marginStart = ui.dp(6)
+            })
+        }
+        appearance.addView(choices)
+        parent.addView(appearance)
+        val apps = ui.card()
+        cardTitle(apps, "目标应用", "只对你选择的应用发送跳过请求。")
+        apps.addView(createAppSelector())
+        parent.addView(apps)
+
+        val permissions = ui.card()
+        cardTitle(permissions, "权限与连接", "系统授权与服务连接状态分开展示。")
+        permissionRow(permissions, "通知使用权", "读取播放器控制会话", "notification",
+            { isNotificationListenerEnabled() }, { openNotificationListenerSettings() })
+        permissionRow(permissions, "悬浮窗", "在其他应用上层显示按钮", "overlay",
+            { canDrawOverlays() }, { openOverlaySettings() })
+        permissionRow(permissions, "无障碍服务", "自动识别广告需要此服务", "accessibility",
+            { SkipAdAccessibilityService.isRunning() }, { openAccessibilitySettings() },
+            { if (isAccessibilityServiceEnabled()) "已授权 · 待连接" else "未开启" })
+        permissionRow(permissions, "使用情况访问", "未启用无障碍时，用于判断当前应用", "usage",
+            { hasUsageStatsPermission() }, { openUsageAccessSettings() })
+        parent.addView(permissions)
+
+        val detection = ui.card()
+        cardTitle(detection, "补充检测", "页面变化时优先检测，此间隔用于补漏。")
+        addSlider(detection, "检查间隔", config.detectIntervalMs, 200, 2000, { "${it} ms" }) { config.detectIntervalMs = it }
+        detection.addView(ui.label("间隔越小，补漏越及时，也会增加耗电。", 12f, ui.secondary))
+        parent.addView(detection)
+
+        val about = ui.card()
+        cardTitle(about, "关于")
+        val version = packageManager.getPackageInfo(packageName, 0).versionName ?: ""
+        about.addView(ui.label("抖音跳广告助手  ·  $version", 12f, ui.secondary))
+        about.addView(ui.space(8))
+        about.addView(ui.label("识别存在覆盖限制，未自动跳过时可手动点击悬浮窗。", 12f, ui.secondary))
+        parent.addView(about)
     }
 
-    private fun makeLabel(text: String) = TextView(this).apply {
-        this.text = text; textSize = 13f; setPadding(0, 12, 0, 4)
+    private fun permissionRow(parent: LinearLayout, title: String, description: String, key: String,
+        enabled: () -> Boolean, open: () -> Unit, inactive: () -> String = { "未开启" }) {
+        val row = ui.row().apply {
+            tag = "permission_$key"
+            minimumHeight = ui.dp(74)
+            isClickable = true; isFocusable = true
+            setOnClickListener { open() }
+            contentDescription = "$title，点击管理"
+        }
+        val labels = ui.column()
+        labels.addView(ui.label(title, 14f, medium = true))
+        labels.addView(ui.space(5))
+        labels.addView(ui.label(description, 11f, ui.secondary))
+        row.addView(labels, LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = ui.dp(12) })
+        val state = ui.label("", 11f, medium = true)
+        row.addView(state)
+        row.addView(ui.label("  ›", 22f, ui.secondary))
+        permissionRefreshers.add {
+            val active = enabled()
+            state.text = if (active) "已开启" else inactive()
+            state.setTextColor(if (active) ui.accent else ui.warning)
+        }
+        parent.addView(row)
+        if (key != "usage") parent.addView(ui.divider())
     }
 
-    private fun makeButton(text: String, onClick: () -> Unit) = Button(this).apply {
-        this.text = text; setOnClickListener { onClick() }
+    private fun addSlider(parent: LinearLayout, title: String, value: Int, min: Int, max: Int,
+        format: (Int) -> String, changed: (Int) -> Unit) {
+        val line = ui.row()
+        line.addView(ui.label(title, 13f), LinearLayout.LayoutParams(0, -2, 1f))
+        val valueView = ui.label(format(value), 12f, ui.accent, true)
+        line.addView(valueView)
+        parent.addView(line)
+        parent.addView(createSeekBar(value, max, min) {
+            valueView.text = format(it)
+            changed(it)
+        }.apply { contentDescription = title }, LinearLayout.LayoutParams(-1, ui.dp(48)))
+        parent.addView(ui.space(10))
+    }
+
+    private fun refreshRuntimeUi() {
+        if (!::ui.isInitialized) return
+        val running = isFloatingServiceRunning()
+        val basicReady = isNotificationListenerEnabled() && canDrawOverlays() &&
+            (hasUsageStatsPermission() || SkipAdAccessibilityService.isRunning())
+        statusBadge?.text = if (running) "●  运行中" else "○  已停止"
+        statusBadge?.setTextColor(if (running) ui.accent else ui.secondary)
+        statusTitle?.text = when {
+            running -> "悬浮窗已开启"
+            !basicReady -> "还有一步，准备就绪"
+            else -> "准备好再出发"
+        }
+        statusDetail?.text = when {
+            !basicReady -> "前往权限设置，完成授权后即可使用。"
+            running && config.autoSkip && !SkipAdAccessibilityService.isRunning() -> "无障碍尚未连接，当前可手动发送跳过请求。"
+            running && config.autoSkip -> "自动跳过已开启，也可以随时轻点按钮。"
+            running -> "遇到广告，轻点悬浮按钮发送跳过请求。"
+            else -> "开启悬浮窗，把更多时间留给故事。"
+        }
+        serviceToggle?.text = if (running) "停止悬浮窗" else if (basicReady) "开启悬浮窗" else "检查权限并开启"
+        todayCountView?.text = config.getTodaySkipCount().toString()
+        weekCountView?.text = config.getWeekSkipCount().toString()
+        readinessText?.text = when {
+            !basicReady -> "基础权限尚未完成，点右侧按钮查看。"
+            config.autoSkip && !SkipAdAccessibilityService.isRunning() -> "基础权限已就绪，无障碍服务仍需连接。"
+            else -> "基础权限已就绪，按你的喜好选择手动或自动。"
+        }
+        permissionRefreshers.forEach { it() }
     }
 
     /**
      * 创建颜色选择器（预设色块 + 选色盘）
      */
     private fun createColorPicker(): View {
-        val container = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            setPadding(0, 8, 0, 8)
+        val column = ui.column()
+        val scroll = android.widget.HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false }
+        val colors = ui.row()
+        val swatches = mutableListOf<Pair<Int, FrameLayout>>()
+        fun markSelection() {
+            swatches.forEach { (color, frame) ->
+                frame.background = ui.rounded(if (color == config.buttonColor) ui.accentSoft else ui.surface, 14)
+                frame.isSelected = color == config.buttonColor
+            }
         }
         for (color in presetColors) {
-            val btn = View(this).apply {
-                layoutParams = LinearLayout.LayoutParams(80, 80).apply { marginEnd = 12 }
-                setBackgroundColor(color)
+            val frame = FrameLayout(this).apply {
+                minimumWidth = ui.dp(48); minimumHeight = ui.dp(48)
+                contentDescription = "按钮颜色 #${Integer.toHexString(color).takeLast(6)}"
+                isFocusable = true
                 setOnClickListener {
                     config.buttonColor = color
+                    markSelection()
                     refreshFloatingButton()
                 }
             }
-            container.addView(btn)
+            val dot = View(this).apply { background = ui.rounded(color, 30, true) }
+            frame.addView(dot, FrameLayout.LayoutParams(ui.dp(28), ui.dp(28), Gravity.CENTER))
+            colors.addView(frame, LinearLayout.LayoutParams(ui.dp(48), ui.dp(48)).apply { marginEnd = ui.dp(3) })
+            swatches.add(color to frame)
         }
-        // 选色盘按钮
-        val customBtn = Button(this).apply {
-            text = "选色盘"
-            textSize = 11f
-            setOnClickListener {
-                ColorPickerDialog(this@MainActivity, config.buttonColor) { color ->
-                    config.buttonColor = color
-                    refreshFloatingButton()
-                    Toast.makeText(this@MainActivity, "颜色已更新", Toast.LENGTH_SHORT).show()
-                }.show()
-            }
-        }
-        container.addView(customBtn)
-        return container
+        markSelection()
+        scroll.addView(colors)
+        column.addView(scroll)
+        column.addView(ui.space(12))
+        column.addView(ui.button("自定义颜色") {
+            ColorPickerDialog(this, config.buttonColor) { color ->
+                config.buttonColor = color
+                markSelection()
+                refreshFloatingButton()
+            }.show()
+        }, LinearLayout.LayoutParams(-1, -2))
+        return column
     }
 
     /**
@@ -456,6 +739,9 @@ class MainActivity : AppCompatActivity() {
         return SeekBar(this).apply {
             this.max = max - min
             progress = value - min
+            thumbTintList = ColorStateList.valueOf(ui.accent)
+            progressTintList = ColorStateList.valueOf(ui.accent)
+            progressBackgroundTintList = ColorStateList.valueOf(ui.line)
             setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                 override fun onProgressChanged(sb: SeekBar?, progress: Int, fromUser: Boolean) {
                     if (fromUser) onChanged(progress + min)
@@ -489,6 +775,8 @@ class MainActivity : AppCompatActivity() {
         for (value in shapes) {
             val preview = ShapePreviewView(this, value).apply {
                 isSelectedShape = (config.buttonShape == value)
+                contentDescription = listOf("圆形", "圆角方形", "方形", "爱心", "星形", "云朵", "三角形")[value]
+                isFocusable = true
             }
             shapePreviews.add(preview)
             container.addView(preview)
@@ -508,7 +796,7 @@ class MainActivity : AppCompatActivity() {
         private val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG)
         private val borderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             style = Paint.Style.STROKE
-            color = 0xFF2196F3.toInt()   // 蓝色选中边框
+            color = ui.accent
         }
 
         init {
@@ -565,23 +853,32 @@ class MainActivity : AppCompatActivity() {
      * 创建文字编辑器
      */
     private fun createTextEditor(): View {
-        val container = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val container = ui.row()
         val input = EditText(this).apply {
-            setText(config.buttonText)
-            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            setText(draftButtonText ?: config.buttonText)
+            hint = "留空则不显示文字"
+            textSize = 14f
+            setTextColor(ui.text)
+            setHintTextColor(ui.secondary)
+            setSingleLine(true)
+            background = ui.rounded(ui.surfaceAlt, 14)
+            setPadding(ui.dp(14), ui.dp(12), ui.dp(14), ui.dp(12))
+            minimumHeight = ui.dp(50)
+            addTextChangedListener(object : android.text.TextWatcher {
+                override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+                override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) { draftButtonText = s?.toString() }
+                override fun afterTextChanged(s: android.text.Editable?) {}
+            })
         }
-        val btn = Button(this).apply {
-            text = "保存"
-            setOnClickListener {
-                // 允许保存空文字：图片模式下清空文字即显示纯图片背景，文字模式下清空则为纯色块无文字
-                // （FloatingView.onDraw 已判断 text.isNotEmpty() 才绘制文字，空文字不会导致悬浮窗空白）
-                config.buttonText = input.text.toString()
-                refreshFloatingButton()
-                Toast.makeText(this@MainActivity, "文字已更新", Toast.LENGTH_SHORT).show()
-            }
-        }
-        container.addView(input)
-        container.addView(btn)
+        container.addView(input, LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = ui.dp(8) })
+        container.addView(ui.button("应用") {
+            config.buttonText = input.text.toString()
+            draftButtonText = config.buttonText
+            refreshFloatingButton()
+            input.clearFocus()
+            (getSystemService(INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager)
+                .hideSoftInputFromWindow(input.windowToken, 0)
+        })
         return container
     }
 
@@ -591,43 +888,26 @@ class MainActivity : AppCompatActivity() {
      * 创建内容模式选择器：文字 / 图片两个互斥按钮，当前模式高亮
      */
     private fun createContentModeSelector(): View {
-        val container = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        val textBtn = Button(this).apply {
-            text = "文字"
-            textSize = 12f
-            setOnClickListener { setContentMode(ConfigManager.CONTENT_TEXT) }
-        }
-        val imageBtn = Button(this).apply {
-            text = "图片"
-            textSize = 12f
-            setOnClickListener { setContentMode(ConfigManager.CONTENT_IMAGE) }
-        }
-        textModeBtn = textBtn
-        imageModeBtn = imageBtn
-        container.addView(textBtn)
-        container.addView(imageBtn)
+        val container = ui.row()
+        textModeBtn = ui.button("文字") { setContentMode(ConfigManager.CONTENT_TEXT) }
+        imageModeBtn = ui.button("图片") { setContentMode(ConfigManager.CONTENT_IMAGE) }
+        container.addView(textModeBtn, LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = ui.dp(8) })
+        container.addView(imageModeBtn, LinearLayout.LayoutParams(0, -2, 1f))
         updateContentModeButtons()
         return container
     }
 
-    /** 切换内容模式并刷新悬浮窗 */
     private fun setContentMode(mode: Int) {
         config.contentMode = mode
         updateContentModeButtons()
+        imageOptions?.visibility = if (mode == ConfigManager.CONTENT_IMAGE) View.VISIBLE else View.GONE
         refreshFloatingButton()
     }
 
-    /** 刷新内容模式按钮的高亮状态（选中项蓝底白字，未选中灰底黑字） */
     private fun updateContentModeButtons() {
         val isImage = config.contentMode == ConfigManager.CONTENT_IMAGE
-        textModeBtn?.apply {
-            setBackgroundColor(if (!isImage) 0xFF2196F3.toInt() else 0xFFDDDDDD.toInt())
-            setTextColor(if (!isImage) Color.WHITE else Color.BLACK)
-        }
-        imageModeBtn?.apply {
-            setBackgroundColor(if (isImage) 0xFF2196F3.toInt() else 0xFFDDDDDD.toInt())
-            setTextColor(if (isImage) Color.WHITE else Color.BLACK)
-        }
+        textModeBtn?.let { ui.styleButton(it, !isImage); it.isSelected = !isImage }
+        imageModeBtn?.let { ui.styleButton(it, isImage); it.isSelected = isImage }
     }
 
     // ===== 图片选择与裁剪 =====
@@ -636,35 +916,27 @@ class MainActivity : AppCompatActivity() {
      * 创建图片区：选择图片按钮 + 清除按钮 + 预览缩略图
      */
     private fun createImageSection(): View {
-        val container = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        val pickBtn = Button(this).apply {
-            text = "选择图片"
-            textSize = 12f
-            setOnClickListener { pickImageLauncher.launch("image/*") }
-        }
-        val clearBtn = Button(this).apply {
-            text = "清除图片"
-            textSize = 12f
-            setOnClickListener {
-                config.imagePath = null
-                updateImagePreview()
-                refreshFloatingButton()
-                Toast.makeText(this@MainActivity, "已清除图片", Toast.LENGTH_SHORT).show()
-            }
-        }
-        row.addView(pickBtn)
-        row.addView(clearBtn)
-        container.addView(row)
-
-        // 预览缩略图（CENTER_CROP 居中裁剪显示）
+        val container = ui.column()
+        container.addView(ui.space(14))
         val preview = ImageView(this).apply {
-            layoutParams = LinearLayout.LayoutParams(240, 240).apply { topMargin = 8 }
-            scaleType = ImageView.ScaleType.CENTER_CROP
-            setBackgroundColor(0xFFEEEEEE.toInt())
+            scaleType = ImageView.ScaleType.CENTER_INSIDE
+            background = ui.rounded(ui.surfaceAlt, 16)
+            clipToOutline = true
+            contentDescription = "当前图片"
+            setPadding(ui.dp(8), ui.dp(8), ui.dp(8), ui.dp(8))
         }
         imagePreview = preview
-        container.addView(preview)
+        container.addView(preview, LinearLayout.LayoutParams(-1, ui.dp(120)))
+        container.addView(ui.space(10))
+        val row = ui.row()
+        row.addView(ui.button("选择并裁剪") { pickImageLauncher.launch("image/*") },
+            LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = ui.dp(8) })
+        row.addView(ui.button("清除") {
+            config.imagePath = null
+            updateImagePreview()
+            refreshFloatingButton()
+        })
+        container.addView(row)
         updateImagePreview()
         return container
     }
@@ -720,6 +992,8 @@ class MainActivity : AppCompatActivity() {
             filePath != null -> {
                 config.imagePath = filePath
                 config.contentMode = ConfigManager.CONTENT_IMAGE
+                updateContentModeButtons()
+                imageOptions?.visibility = View.VISIBLE
                 updateImagePreview()
                 refreshFloatingButton()
                 Toast.makeText(this, "图片已设置", Toast.LENGTH_SHORT).show()
@@ -737,6 +1011,8 @@ class MainActivity : AppCompatActivity() {
             }
             config.imagePath = file.absolutePath
             config.contentMode = ConfigManager.CONTENT_IMAGE
+            updateContentModeButtons()
+            imageOptions?.visibility = View.VISIBLE
             updateImagePreview()
             refreshFloatingButton()
             Toast.makeText(this, "图片已设置", Toast.LENGTH_SHORT).show()
@@ -749,19 +1025,27 @@ class MainActivity : AppCompatActivity() {
      * 创建 App 选择器
      */
     private fun createAppSelector(): View {
-        val container = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        val enabled = config.getEnabledApps()
-        for ((name, pkg) in config.allSupportedApps) {
-            val cb = CheckBox(this).apply {
-                text = "$name ($pkg)"
-                isChecked = enabled.contains(pkg)
-                setOnCheckedChangeListener { _, isChecked ->
+        val container = ui.column()
+        for ((index, app) in config.allSupportedApps.withIndex()) {
+            val (name, pkg) = app
+            val row = ui.row().apply { minimumHeight = ui.dp(62) }
+            val icon = ui.label(if (index == 0) "抖" else "速", 16f, ui.accent, true).apply {
+                gravity = Gravity.CENTER; background = ui.rounded(ui.accentSoft, 13)
+            }
+            row.addView(icon, LinearLayout.LayoutParams(ui.dp(40), ui.dp(40)).apply { marginEnd = ui.dp(12) })
+            row.addView(ui.label(name, 14f, medium = true), LinearLayout.LayoutParams(0, -2, 1f))
+            row.addView(SwitchCompat(this).apply {
+                isChecked = config.isAppEnabled(pkg)
+                contentDescription = "启用$name"
+                minimumHeight = ui.dp(48)
+                setOnCheckedChangeListener { _, checked ->
                     val current = config.getEnabledApps().toMutableSet()
-                    if (isChecked) current.add(pkg) else current.remove(pkg)
+                    if (checked) current.add(pkg) else current.remove(pkg)
                     config.setEnabledApps(current)
                 }
-            }
-            container.addView(cb)
+            })
+            container.addView(row)
+            if (index < config.allSupportedApps.lastIndex) container.addView(ui.divider())
         }
         return container
     }
@@ -776,6 +1060,7 @@ class MainActivity : AppCompatActivity() {
                 waitingForNotificationPermission = false
                 waitingForOverlayPermission = false
                 waitingForUsageStatsPermission = false
+                pendingAutoSkip = false
             }
             .show()
     }
@@ -813,43 +1098,42 @@ class MainActivity : AppCompatActivity() {
     // ===== 服务控制 =====
 
     private fun startFloatingButton() {
+        config.floatingEnabled = true
+        if (!isNotificationListenerEnabled() || !canDrawOverlays() ||
+            (!hasUsageStatsPermission() && !SkipAdAccessibilityService.isRunning())) {
+            checkAndProceed()
+            return
+        }
         val intent = Intent(this, FloatingButtonService::class.java).apply {
             action = FloatingButtonService.ACTION_START
         }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(intent) else startService(intent)
-        Toast.makeText(this, "悬浮按钮已启动", Toast.LENGTH_SHORT).show()
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(intent) else startService(intent)
+        } catch (e: Exception) {
+            Toast.makeText(this, "无法启动悬浮窗：${e.message}", Toast.LENGTH_LONG).show()
+        }
     }
 
     private fun stopFloatingButton() {
-        startService(Intent(this, FloatingButtonService::class.java).apply {
-            action = FloatingButtonService.ACTION_STOP
-        })
+        config.floatingEnabled = false
+        stopService(Intent(this, FloatingButtonService::class.java))
         Toast.makeText(this, "悬浮按钮已停止", Toast.LENGTH_SHORT).show()
     }
 
     private fun refreshFloatingButton() {
-        // 修 Bug7：服务未启动时发 REFRESH 会空跑（Service 端 refreshButtonStyle 因 floatingView==null 直接 return），
-        // 用户改了样式却没反应也无提示。这里先判断服务是否运行，未运行则提示先启动。
-        if (!isFloatingServiceRunning()) {
-            Toast.makeText(this, "请先启动悬浮按钮", Toast.LENGTH_SHORT).show()
-            return
+        floatingPreview?.let { preview ->
+            val size = ui.dp(config.buttonSize)
+            preview.layoutParams = FrameLayout.LayoutParams(size, size, Gravity.CENTER)
+            preview.updateConfig()
         }
+        shapePreviews.forEach { it.invalidate() }
+        if (!isFloatingServiceRunning()) return
         startService(Intent(this, FloatingButtonService::class.java).apply {
             action = FloatingButtonService.ACTION_REFRESH
         })
     }
 
-    /** 检测悬浮按钮服务是否正在运行 */
-    private fun isFloatingServiceRunning(): Boolean {
-        val am = getSystemService(ACTIVITY_SERVICE) as ActivityManager
-        @Suppress("DEPRECATION")
-        for (service in am.getRunningServices(Int.MAX_VALUE)) {
-            if (FloatingButtonService::class.java.name == service.service.className) {
-                return true
-            }
-        }
-        return false
-    }
+    private fun isFloatingServiceRunning(): Boolean = FloatingButtonService.isRunning()
 
     private fun buildPermissionStatus(): String {
         val n = if (isNotificationListenerEnabled()) "✓ 已开启" else "✗ 未开启"

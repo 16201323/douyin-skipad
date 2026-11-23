@@ -12,8 +12,9 @@ android {
         applicationId = "com.example.skipad"
         minSdk = 24          // 兼容 Android 7.0+
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 6
+        versionName = "1.1.1"
+        testInstrumentationRunner = "com.example.skipad.UiPreviewInstrumentation"
     }
 
     buildTypes {
@@ -37,6 +38,10 @@ android {
         jvmTarget = "17"
     }
 
+    testOptions {
+        unitTests.isIncludeAndroidResources = true
+    }
+
     // APK 输出文件命名：统一用项目名 douyin-skipad，便于识别与分发
     // （用户要求：apk 名称更名为项目名称）release → douyin-skipad-release.apk，debug → douyin-skipad-debug.apk
     applicationVariants.all {
@@ -49,6 +54,8 @@ android {
 }
 
 dependencies {
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.robolectric:robolectric:4.14.1")
     // AppCompat（用于 AppCompatActivity）
     implementation("androidx.appcompat:appcompat:1.7.0")
     // 图片裁剪库（CanHub 维护的 uCrop 活跃分支）：悬浮窗图片模式的自由框选裁剪

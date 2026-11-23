@@ -1,6 +1,6 @@
 package com.example.skipad
 
-import android.app.Dialog
+import androidx.appcompat.app.AppCompatDialog
 import android.content.Context
 import android.graphics.Color
 import android.graphics.LinearGradient
@@ -27,7 +27,9 @@ class ColorPickerDialog(
     context: Context,
     private val initialColor: Int,
     private val onColorSelected: (Int) -> Unit
-) : Dialog(context) {
+) : AppCompatDialog(context) {
+
+    private val ui = AppUi(context)
 
     // 当前 HSV 值
     private var hue = 0f
@@ -50,53 +52,62 @@ class ColorPickerDialog(
 
         val layout = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(40, 40, 40, 40)
+            setPadding(ui.dp(24), ui.dp(24), ui.dp(24), ui.dp(24))
+            background = ui.rounded(ui.surface, 24)
         }
 
+        layout.addView(ui.label("自定义颜色", 21f, medium = true))
+        layout.addView(ui.space(8))
+        layout.addView(ui.label("调整下方滑块，找到喜欢的颜色。", 12f, ui.secondary))
+        layout.addView(ui.space(20))
         // 预览色块
         previewView = View(context).apply {
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
-                120
-            ).apply { bottomMargin = 24 }
-            setBackgroundColor(initialColor)
+                ui.dp(72)
+            ).apply { bottomMargin = ui.dp(16) }
+            background = ui.rounded(initialColor, 16)
         }
         layout.addView(previewView)
 
         // 色相滑块
-        layout.addView(makeLabel("色相 Hue"))
+        layout.addView(makeLabel("色相"))
         hueBar = createHueBar()
         layout.addView(hueBar)
         layout.addView(createHueSeekBar())
 
         // 饱和度滑块
-        layout.addView(makeLabel("饱和度 Saturation"))
+        layout.addView(makeLabel("饱和度"))
         satBar = createSatBar()
         layout.addView(satBar)
         layout.addView(createSatSeekBar())
 
         // 明度滑块
-        layout.addView(makeLabel("明度 Value"))
+        layout.addView(makeLabel("明度"))
         valBar = createValBar()
         layout.addView(valBar)
         layout.addView(createValSeekBar())
 
         // 确认按钮
-        val btn = android.widget.Button(context).apply {
-            text = "确定"
-            setOnClickListener {
-                onColorSelected(currentColor())
-                dismiss()
-            }
+        val btn = ui.button("应用颜色", true) {
+            onColorSelected(currentColor())
+            dismiss()
         }
-        layout.addView(btn)
+        layout.addView(ui.space(16))
+        layout.addView(btn, LinearLayout.LayoutParams(-1, -2))
 
+        window?.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(android.graphics.Color.TRANSPARENT))
         setContentView(layout)
         updateBars()
     }
 
-    private fun makeLabel(text: String) = TextView(context).apply {
-        this.text = text; textSize = 13f; setPadding(0, 16, 0, 4)
+    override fun onStart() {
+        super.onStart()
+        window?.setLayout((context.resources.displayMetrics.widthPixels * 0.90f).toInt(), LinearLayout.LayoutParams.WRAP_CONTENT)
+    }
+
+    private fun makeLabel(text: String) = ui.label(text, 12f, ui.secondary).apply {
+        setPadding(0, ui.dp(12), 0, ui.dp(6))
     }
 
     /** 当前颜色（带原 alpha） */
@@ -107,7 +118,7 @@ class ColorPickerDialog(
     }
 
     private fun updatePreview() {
-        previewView.setBackgroundColor(currentColor())
+        previewView.background = ui.rounded(currentColor(), 16)
         updateBars()
     }
 
@@ -118,7 +129,7 @@ class ColorPickerDialog(
         }
         return View(context).apply {
             layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, 30
+                LinearLayout.LayoutParams.MATCH_PARENT, ui.dp(6)
             ).apply { bottomMargin = 8 }
             background = GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT, colors)
         }
@@ -126,6 +137,9 @@ class ColorPickerDialog(
 
     private fun createHueSeekBar(): SeekBar {
         return SeekBar(context).apply {
+            minimumHeight = ui.dp(48)
+            thumbTintList = android.content.res.ColorStateList.valueOf(ui.accent)
+            progressTintList = android.content.res.ColorStateList.valueOf(ui.accent)
             max = 360
             progress = hue.toInt()
             setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
@@ -142,13 +156,16 @@ class ColorPickerDialog(
     private fun createSatBar(): View {
         return View(context).apply {
             layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, 30
+                LinearLayout.LayoutParams.MATCH_PARENT, ui.dp(6)
             ).apply { bottomMargin = 8 }
         }
     }
 
     private fun createSatSeekBar(): SeekBar {
         return SeekBar(context).apply {
+            minimumHeight = ui.dp(48)
+            thumbTintList = android.content.res.ColorStateList.valueOf(ui.accent)
+            progressTintList = android.content.res.ColorStateList.valueOf(ui.accent)
             max = 100
             progress = (saturation * 100).toInt()
             setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
@@ -165,13 +182,16 @@ class ColorPickerDialog(
     private fun createValBar(): View {
         return View(context).apply {
             layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, 30
+                LinearLayout.LayoutParams.MATCH_PARENT, ui.dp(6)
             ).apply { bottomMargin = 8 }
         }
     }
 
     private fun createValSeekBar(): SeekBar {
         return SeekBar(context).apply {
+            minimumHeight = ui.dp(48)
+            thumbTintList = android.content.res.ColorStateList.valueOf(ui.accent)
+            progressTintList = android.content.res.ColorStateList.valueOf(ui.accent)
             max = 100
             progress = (value * 100).toInt()
             setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {

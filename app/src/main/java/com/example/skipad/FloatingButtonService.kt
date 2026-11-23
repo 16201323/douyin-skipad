@@ -1,22 +1,22 @@
 package com.example.skipad
 
-import android.app.ActivityManager
-import android.app.AppOpsManager
-import android.app.usage.UsageStats
-import android.app.usage.UsageStatsManager
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
-import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.graphics.PixelFormat
-import android.media.session.MediaController
-import android.media.session.MediaSessionManager
 import android.os.Build
 import android.os.Handler
+import android.os.HandlerThread
+import android.os.Process
+import android.view.ViewConfiguration
+import java.util.concurrent.atomic.AtomicLong
 import android.os.IBinder
+import android.os.SystemClock
+import android.provider.Settings
+import androidx.core.app.NotificationCompat
 import android.os.Looper
 import android.util.Log
 import android.view.Gravity
@@ -33,15 +33,13 @@ import android.widget.Toast
  *   - 点击 → 跳过广告
  *   - 长按 → 进入隐身状态
  *   - 拖动 → 移动位置
- * - 隐身状态：
- *   - 按钮靠边，只露 1/3 在屏幕外边缘
- *   - 颜色变浅（透明度降低）
+ * - 收起状态：
+ *   - 按钮靠边显示为半透明小长条
  *   - 点击 → 恢复正常状态
  *
  * 显示逻辑：
- * - 通过 MediaSessionManager.OnActiveSessionsChangedListener 监听活跃 MediaSession
- * - 当已启用的短剧 App 有活跃 MediaSession（正在播放视频）时显示悬浮窗
- * - 其他情况隐藏悬浮窗
+ * - 用户启动后常驻显示，主动停止后保持停止。
+ * - 广告识别、请求发送、页面确认分开处理；操作始终限定在当前目标应用。
  */
 class FloatingButtonService : Service() {
 
@@ -53,11 +51,23 @@ class FloatingButtonService : Service() {
         const val ACTION_START = "com.example.skipad.START_FLOATING"
         const val ACTION_STOP = "com.example.skipad.STOP_FLOATING"
         const val ACTION_REFRESH = "com.example.skipad.REFRESH_FLOATING"
+        @Volatile private var runningInstance: FloatingButtonService? = null
+
+        internal fun isRunning(): Boolean = runningInstance?.pollingStarted == true
+
+        internal fun onAccessibilityChange(pkg: String?, windowChange: Boolean) {
+            val service = runningInstance ?: return
+            if (!service.pollingStarted) return
+            val config = ConfigManager.get(service)
+            if (!config.autoSkip && service.pendingSkip == null) return
+            if (!windowChange && (pkg == null || !config.isAppEnabled(pkg))) return
+            val now = SystemClock.uptimeMillis()
+            val delay = if (windowChange) 0L else maxOf(30L, service.lastDetectionAt + 80L - now)
+            service.scheduleDetection(delay, "event")
+        }
     }
 
     private lateinit var windowManager: WindowManager
-    private lateinit var mediaSessionManager: MediaSessionManager
-    private lateinit var activityManager: ActivityManager
     private var floatingView: FloatingView? = null
     private var layoutParams: WindowManager.LayoutParams? = null
 
@@ -65,56 +75,116 @@ class FloatingButtonService : Service() {
     private var normalX = 0                 // 收起前的 x 坐标（恢复位置用，修 Bug1）
     private var normalWidth = 0             // 收起前的宽度（恢复尺寸用）
     private var normalHeight = 0            // 收起前的高度（恢复尺寸用）
-    private var isVisible = true            // 悬浮窗是否可见
+    @Volatile private var isVisible = true            // 悬浮窗是否可见
     private var screenWidth = 0
 
     private val handler = Handler(Looper.getMainLooper())
-    // 前台检测间隔改由 ConfigManager.detectIntervalMs 读取（用户在 App 可调），
-    // 不再硬编码，见 foregroundChecker.run() 末尾。
+    private lateinit var detectionThread: HandlerThread
+    private lateinit var detectionHandler: Handler
+    @Volatile private var pollingStarted = false
+    @Volatile private var interactionActive = false
+    private val interactionGeneration = AtomicLong(0L)
+    private var dragFramePending = false
+    private val dragPositionFrame = Runnable {
+        if (dragFramePending) {
+            dragFramePending = false
+            applyDragPosition()
+        }
+    }
+    private val adGate = AdSkipGate()
+    private data class PendingSkip(
+        val target: String,
+        val scope: String,
+        val startedAt: Long,
+        val automatic: Boolean,
+        var fallbackTried: Boolean,
+        var clearSince: Long? = null
+    )
+    @Volatile private var pendingSkip: PendingSkip? = null
+    private var scheduledAt: Long? = null
+    private var scheduledCause = "poll"
+    @Volatile private var lastDetectionAt = 0L
+    private var lastEvidenceSummary: String? = null
+    private val detectionTask = Runnable {
+        scheduledAt = null
+        runDetection(scheduledCause)
+    }
 
-    // 自动跳过节流：上次跳过时间，避免同一次广告被反复跳过
-    private var lastSkipTime = 0L
-    private val skipThrottleMs = 2000L      // 2秒内不重复跳过
+    /** 检测状态和跨进程查询串行在专用线程；主线程只处理窗口与触摸。 */
+    private fun scheduleDetection(delayMs: Long, cause: String) {
+        if (!pollingStarted) return
+        if (Looper.myLooper() != detectionHandler.looper) {
+            detectionHandler.post { scheduleDetection(delayMs, cause) }
+            return
+        }
+        if (interactionActive) {
+            adGate.cancelCandidate()
+            pendingSkip?.clearSince = null
+            return
+        }
+        val due = SystemClock.uptimeMillis() + delayMs.coerceAtLeast(0L)
+        if (scheduledAt?.let { it <= due } == true) return
+        detectionHandler.removeCallbacks(detectionTask)
+        scheduledAt = due
+        scheduledCause = cause
+        detectionHandler.postAtTime(detectionTask, due)
+    }
 
-    // 自动跳过「双阶段确认」：首次检测到广告时记下时间，下一轮仍检测到才真正跳过，
-    // 避免界面瞬态文本闪现导致的误触（经验：单次命中立即执行误触率高）。
-    private var adFirstDetectedAt = 0L
-    private val adConfirmDelayMs = 300L     // 首次命中后至少间隔 300ms 且仍命中才跳过（原来 600ms，广告倒计时文案稳定持续，缩短以加快响应）
-
-    // 无障碍未连接警告的节流时间（避免每秒刷屏）
-    private var lastA11yWarnTime = 0L
-    private val a11yWarnIntervalMs = 5000L
+    private fun runDetection(cause: String) {
+        if (!pollingStarted) return
+        if (Looper.myLooper() != detectionHandler.looper) {
+            scheduleDetection(0L, cause)
+            return
+        }
+        if (interactionActive) {
+            adGate.cancelCandidate()
+            pendingSkip?.clearSince = null
+            return
+        }
+        lastDetectionAt = SystemClock.uptimeMillis()
+        if (!Settings.canDrawOverlays(this)) {
+            pollingStarted = false
+            stopSelf()
+            return
+        }
+        try {
+            val config = ConfigManager.get(this)
+            val pending = pendingSkip
+            if (pending != null) {
+                if (pending.automatic && !config.autoSkip) {
+                    pendingSkip = null
+                    adGate.cancelCandidate()
+                } else verifyPendingSkip()
+            } else if (config.autoSkip && isVisible) {
+                tryAutoSkip(cause)
+            } else adGate.cancelCandidate()
+            if (pendingSkip != null) scheduleDetection(100L, "verify")
+        } catch (e: Exception) {
+            adGate.cancelCandidate()
+            pendingSkip = null
+            Log.e(TAG, "广告检测失败，不执行跳过", e)
+        }
+    }
 
     // 贴边收起：拖到屏幕边缘并持续 2 秒不动 → 自动收起成小长方形
     private var edgeHoldRunnable: Runnable? = null
     private val edgeHoldMs = 2000L          // 贴边持续多久触发收起
     private val edgeThresholdDp = 14        // 距离屏幕边缘多少 dp 以内算「贴边」
 
-    // MediaSession 变化监听器
-    private val sessionsChangedListener = MediaSessionManager.OnActiveSessionsChangedListener {
-        Log.d(TAG, "MediaSession 列表变化，重新检测")
-        checkShouldShow()
-    }
-
     // 定时检测前台应用
     private val foregroundChecker = object : Runnable {
         override fun run() {
-            // 每轮都读取最新配置，用户在 App 里调节「广告检测间隔」后即时生效
+            if (!pollingStarted) return
             val config = ConfigManager.get(this@FloatingButtonService)
-            // 整个循环体包 try/catch：任何子步骤异常都不能中断 postDelayed，
-            // 否则轮询会永久停止，悬浮窗再也不会自动显隐（修 Bug3）
             try {
                 checkShouldShow()
-                // 自动跳过广告：如果开启了自动跳过，检测到广告则自动跳过
-                if (config.autoSkip && isVisible) {
-                    tryAutoSkip()
-                }
+                runDetection("poll")
             } catch (e: Exception) {
-                Log.e(TAG, "前台检测循环异常: ${e.message}")
+                Log.e(TAG, "悬浮窗保活检测异常", e)
             }
 
             // 无论是否异常，都继续下一轮轮询；间隔取用户设置的「广告检测间隔」
-            handler.postDelayed(this, config.detectIntervalMs.toLong())
+            if (pollingStarted) handler.postDelayed(this, config.detectIntervalMs.toLong())
         }
     }
 
@@ -123,44 +193,47 @@ class FloatingButtonService : Service() {
     override fun onCreate() {
         super.onCreate()
         windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
-        mediaSessionManager = getSystemService(Context.MEDIA_SESSION_SERVICE) as MediaSessionManager
-        activityManager = getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
         screenWidth = resources.displayMetrics.widthPixels
+        detectionThread = HandlerThread("SkipAdDetection", Process.THREAD_PRIORITY_BACKGROUND).apply { start() }
+        detectionHandler = Handler(detectionThread.looper)
+        runningInstance = this
 
-        // 注册 MediaSession 变化监听（需要通知使用权）
-        try {
-            val componentName = ComponentName(this, MediaControlService::class.java)
-            mediaSessionManager.addOnActiveSessionsChangedListener(sessionsChangedListener, componentName)
-            Log.d(TAG, "MediaSession 监听器已注册")
-        } catch (e: Exception) {
-            Log.e(TAG, "注册 MediaSession 监听器失败: ${e.message}", e)
-        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        when (intent?.action) {
-            ACTION_STOP -> {
+        val config = ConfigManager.get(this)
+        if (intent?.action == ACTION_STOP) {
+            config.floatingEnabled = false
+            stopSelf()
+            return START_NOT_STICKY
+        }
+        if (intent?.action == ACTION_REFRESH) {
+            if (floatingView?.isAttachedToWindow == true) refreshButtonStyle()
+            else stopSelf()
+            return if (pollingStarted) START_STICKY else START_NOT_STICKY
+        }
+        if (!Settings.canDrawOverlays(this) || (intent == null && !config.floatingEnabled)) {
+            Log.w(TAG, "未启动悬浮窗：缺少权限或用户已停止")
+            stopSelf()
+            return START_NOT_STICKY
+        }
+        try {
+            startForeground(NOTIFICATION_ID, createNotification())
+            if (!showFloatingButton()) {
                 stopSelf()
                 return START_NOT_STICKY
             }
-            ACTION_REFRESH -> {
-                refreshButtonStyle()
-                return START_STICKY
+            config.floatingEnabled = true
+            if (!pollingStarted) {
+                pollingStarted = true
+                handler.post(foregroundChecker)
+                Log.d(TAG, "启动唯一检测轮询")
+                Log.i(TAG, "AdPipeline started auto=${config.autoSkip} fallback_ms=${config.detectIntervalMs}")
             }
-            else -> {
-                startForeground(NOTIFICATION_ID, createNotification())
-                // 启动时强制显示悬浮窗，给用户明确的「启动成功」视觉反馈。
-                // 原因：如果紧接着就走 checkShouldShow，此时抖音 MediaSession 可能尚未就绪
-                // （通知监听服务刚绑定、或抖音未播放），会导致 View 刚创建就被设为 GONE，
-                // 用户以为没启动成功。先强制显示 2 秒，再进入正常的显示/隐藏判断。
-                showFloatingButton()
-                floatingView?.visibility = View.VISIBLE
-                isVisible = true
-                handler.postDelayed({
-                    checkShouldShow()           // 宽限期后开始正常检测
-                    handler.post(foregroundChecker)  // 启动定时前台检测
-                }, 2000L)
-            }
+        } catch (e: Exception) {
+            Log.e(TAG, "启动悬浮窗失败", e)
+            stopSelf()
+            return START_NOT_STICKY
         }
         return START_STICKY
     }
@@ -175,7 +248,7 @@ class FloatingButtonService : Service() {
             }
             getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
         }
-        return Notification.Builder(this, CHANNEL_ID)
+        return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("抖音跳广告助手")
             .setContentText("悬浮按钮已运行")
             .setSmallIcon(android.R.drawable.ic_media_next)
@@ -185,9 +258,10 @@ class FloatingButtonService : Service() {
     /**
      * 创建并显示悬浮按钮
      */
-    private fun showFloatingButton() {
+    private fun showFloatingButton(): Boolean {
+        if (!Settings.canDrawOverlays(this)) return false
         // 引用存在且仍挂在窗口上 → 无需重建，直接复用
-        if (floatingView?.isAttachedToWindow == true) return
+        if (floatingView?.isAttachedToWindow == true) return true
         // 残留引用：View 已被系统回收或从窗口移除（权限变化、系统回收等），
         // 但 floatingView 引用还在，旧逻辑会直接 return 导致永远不重建。
         // 这里清空引用，走下面的重建流程。
@@ -209,20 +283,27 @@ class FloatingButtonService : Service() {
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.CENTER_VERTICAL or Gravity.END
-            // 位置记忆：若之前拖动并保存过位置（buttonX>=0），启动时恢复；否则用默认右侧位置。
+            // 是否保存与坐标正负无关；上半屏的 y 为负数。
             val config = ConfigManager.get(this@FloatingButtonService)
-            x = if (config.buttonX >= 0) config.buttonX else (60 * density).toInt()
-            y = if (config.buttonY >= 0) config.buttonY else 0
+            x = if (config.hasSavedPosition) config.buttonX else (60 * density).toInt()
+            y = if (config.hasSavedPosition) config.buttonY else 0
         }
 
         setupButtonEvents(button)
         floatingView = button
-        windowManager.addView(floatingView, layoutParams)
+        try {
+            windowManager.addView(button, layoutParams)
+        } catch (e: Exception) {
+            floatingView = null
+            Log.e(TAG, "无法创建悬浮窗", e)
+            return false
+        }
         Log.d(TAG, "悬浮按钮已显示")
 
         // 重建后恢复收起态：若之前处于收起态（小长方形），View 被系统移除重建会丢失该状态，
         // 这里重新应用收起布局，保证重建前后形态一致。
         if (isStealth) enterStealth()
+        return true
     }
 
     /**
@@ -235,73 +316,107 @@ class FloatingButtonService : Service() {
         var initialTouchY = 0f
         var isDragging = false
         var downTime = 0L
+        val touchSlop = ViewConfiguration.get(this).scaledTouchSlop
 
         button.setOnTouchListener { _, event ->
-            when (event.action) {
+            when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
+                    interactionActive = true
+                    interactionGeneration.incrementAndGet()
+                    detectionHandler.post {
+                        adGate.cancelCandidate()
+                        pendingSkip?.clearSince = null
+                    }
                     initialX = layoutParams!!.x
                     initialY = layoutParams!!.y
                     initialTouchX = event.rawX
                     initialTouchY = event.rawY
                     isDragging = false
-                    downTime = System.currentTimeMillis()
-                    // 按下时取消可能正在等待的贴边收起计时（重新开始判定）
+                    downTime = event.eventTime
                     cancelEdgeHold()
-                    false
+                    true
                 }
                 MotionEvent.ACTION_MOVE -> {
                     val dx = (initialTouchX - event.rawX).toInt()
                     val dy = (event.rawY - initialTouchY).toInt()
-                    if (Math.abs(dx) > 10 || Math.abs(dy) > 10) isDragging = true
-
+                    if (kotlin.math.abs(dx) > touchSlop || kotlin.math.abs(dy) > touchSlop) isDragging = true
                     if (isStealth) {
-                        // 收起态小长方形：横向滑动 / 向屏幕内侧拖动 → 恢复正常按钮。
-                        // 水平位移超过阈值即恢复；恢复后把初始参照对齐到恢复后的位置，
-                        // 后续拖动就能平滑地把按钮从边缘带到手指位置（曲面屏更顺手）。
-                        if (Math.abs(dx) > 30) {
+                        if (kotlin.math.abs(dx) > 30) {
                             restoreFromStealth()
                             initialX = layoutParams!!.x
                             initialY = layoutParams!!.y
                             initialTouchX = event.rawX
                             initialTouchY = event.rawY
                         }
-                        true
                     } else if (isDragging) {
-                        // 正常态拖动：更新位置
                         layoutParams!!.x = initialX + dx
                         layoutParams!!.y = initialY + dy
-                        windowManager.updateViewLayout(floatingView, layoutParams)
-                        // 拖到屏幕边缘并保持 → 启动 2 秒计时自动收起；离开边缘则取消。
+                        if (!dragFramePending) {
+                            dragFramePending = true
+                            button.postOnAnimation(dragPositionFrame)
+                        }
                         if (isViewAtEdge()) scheduleEdgeHold() else cancelEdgeHold()
-                        true
-                    } else {
-                        true
                     }
+                    true
                 }
                 MotionEvent.ACTION_UP -> {
-                    // 抬手：取消贴边收起计时（若计时已触发，isStealth 已变为 true）
                     cancelEdgeHold()
-                    val pressDuration = System.currentTimeMillis() - downTime
-                    // 拖动结束（正常态）：记忆当前位置，下次启动恢复
+                    if (isDragging && !isStealth) {
+                        val finalX = initialX + (initialTouchX - event.rawX).toInt()
+                        val finalY = initialY + (event.rawY - initialTouchY).toInt()
+                        if (layoutParams!!.x != finalX || layoutParams!!.y != finalY) {
+                            layoutParams!!.x = finalX
+                            layoutParams!!.y = finalY
+                            dragFramePending = true
+                        }
+                    }
+                    flushDragPosition()
                     if (isDragging && !isStealth) saveButtonPosition()
+                    val pressDuration = event.eventTime - downTime
+                    finishInteraction()
                     if (!isDragging) {
                         if (pressDuration > 600) {
-                            // 长按：收起/恢复切换
                             if (isStealth) restoreFromStealth() else enterStealth()
                         } else {
-                            // 短按：收起态恢复，正常态跳过广告
                             if (isStealth) restoreFromStealth() else performSkip()
                         }
                     }
                     true
                 }
-                else -> {
-                    // CANCEL 等事件也清理贴边计时，避免泄漏
+                MotionEvent.ACTION_CANCEL -> {
                     cancelEdgeHold()
-                    false
+                    flushDragPosition()
+                    if (isDragging && !isStealth) saveButtonPosition()
+                    finishInteraction()
+                    true
                 }
+                else -> true
             }
         }
+    }
+
+    private fun applyDragPosition() {
+        val view = floatingView ?: return
+        val params = layoutParams ?: return
+        if (!view.isAttachedToWindow) return
+        try {
+            windowManager.updateViewLayout(view, params)
+        } catch (e: Exception) {
+            Log.w(TAG, "悬浮窗移动失败", e)
+        }
+    }
+
+    private fun flushDragPosition() {
+        if (!dragFramePending) return
+        floatingView?.removeCallbacks(dragPositionFrame)
+        dragFramePending = false
+        applyDragPosition()
+    }
+
+    private fun finishInteraction() {
+        interactionGeneration.incrementAndGet()
+        interactionActive = false
+        scheduleDetection(100L, "touch-end")
     }
 
     /** 判断悬浮按钮是否已贴近屏幕左/右边缘（用于触发贴边 2 秒自动收起） */
@@ -353,80 +468,143 @@ class FloatingButtonService : Service() {
      * 统一的跳过入口：手动点击与自动检测都走这里，保证行为与统计一致。
      * @param isAuto true=自动检测触发（不弹 Toast，避免打扰）；false=手动点击
      */
-    private fun triggerSkip(isAuto: Boolean) {
-        val success = MediaControlService.skipDouyinAd(this)
-        lastSkipTime = System.currentTimeMillis()
-        if (success) {
-            // 跳过成功：累加今日/本周统计，给用户成就感
-            ConfigManager.get(this).incrementSkipCount()
-            if (!isAuto) {
-                Toast.makeText(this, "已跳过", Toast.LENGTH_SHORT).show()
-            }
-            Log.d(TAG, "${if (isAuto) "自动" else "手动"}跳过成功")
-        } else {
-            Log.d(TAG, "${if (isAuto) "自动" else "手动"}跳过失败")
+    private fun triggerSkip(isAuto: Boolean, target: String? = null) {
+        if (!pollingStarted) return
+        if (Looper.myLooper() != detectionHandler.looper) {
+            detectionHandler.post { triggerSkip(isAuto, target) }
+            return
+        }
+        submitSkip(isAuto, target ?: ForegroundAppResolver.current(this), null)
+    }
+
+    private fun showSkipMessage(message: String) {
+        handler.post {
+            if (pollingStarted) Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
         }
     }
 
-    /**
-     * 自动跳过广告：
-     * 1) 前台门控：只在已启用的目标 App（抖音/抖音极速版）前台时才尝试，避免在其他应用误操作；
-     * 2) 双阶段确认：首次检测到广告只记录时间，下一轮仍检测到且间隔 >= 600ms 才真正跳过，
-     *    减少界面瞬态文本闪现导致的误触（经验：单次命中立即执行误触率高）；
-     * 3) 节流：2 秒内不重复跳过。
-     * 用户反馈：即使倒计时中点击悬浮窗也能跳过，因此检测到广告即可跳过，无需等倒计时结束。
-     */
-    private fun tryAutoSkip() {
-        val now = System.currentTimeMillis()
-        // 节流：避免短时间内重复跳过
-        if (now - lastSkipTime < skipThrottleMs) return
+    private fun submitSkip(isAuto: Boolean, target: String?, expected: AdObservation?) {
+        if (!pollingStarted || interactionActive || pendingSkip != null) return
+        val generation = interactionGeneration.get()
+        if (target == null || !ConfigManager.get(this).isAppEnabled(target)) {
+            if (!isAuto) showSkipMessage("请先打开已勾选的抖音应用")
+            return
+        }
+        // 不保留旧节点；发送前从当前窗口重新取得证据与作用域。
+        val actual = SkipAdAccessibilityService.observeEvidence(target)
+        if (isAuto && (actual?.isAd != true || actual.scope != expected?.scope ||
+            actual.confidence != expected.confidence)) {
+            adGate.cancelCandidate()
+            return
+        }
+        if (!pollingStarted || interactionActive || generation != interactionGeneration.get()) {
+            adGate.cancelCandidate()
+            return
+        }
+        val now = SystemClock.uptimeMillis()
+        val result = MediaControlService.skipDouyinAd(this, target) {
+            pollingStarted && !interactionActive && generation == interactionGeneration.get()
+        }
+        if (result == MediaControlService.Companion.SkipResult.FAILED) {
+            adGate.markFailed(now)
+            if (!isAuto) showSkipMessage("未找到可用的播放会话或跳过按钮")
+            return
+        }
+        if (actual?.isAd == true) {
+            adGate.markSent(actual, now)
+            pendingSkip = PendingSkip(target, actual.scope, now, isAuto,
+                result == MediaControlService.Companion.SkipResult.CLICKED)
+            scheduleDetection(100L, "verify")
+        }
+        Log.i(TAG, "AdPipeline request t=$now automatic=$isAuto confidence=${actual?.confidence}")
+        if (!isAuto) showSkipMessage("已发送跳过请求")
+    }
 
-        // 无障碍连接检查：自动跳过依赖无障碍读屏，未连接则无法检测广告。
-        // 每 5 秒警告一次，便于从日志直接看出根因（而不是静默失败）。
-        if (!SkipAdAccessibilityService.isRunning()) {
-            if (now - lastA11yWarnTime > a11yWarnIntervalMs) {
-                lastA11yWarnTime = now
-                Log.w(TAG, "自动跳过未执行：无障碍服务未连接，请在系统设置中开启本应用的无障碍权限")
+    /** 只在同一播放器内持续观测到广告消失才计数，未知页面不解除广告去重锁。 */
+    private fun verifyPendingSkip() {
+        val pending = pendingSkip ?: return
+        val generation = interactionGeneration.get()
+        val now = SystemClock.uptimeMillis()
+        if (!ConfigManager.get(this).isAppEnabled(pending.target) ||
+            ForegroundAppResolver.current(this) != pending.target) {
+            pendingSkip = null
+            adGate.cancelCandidate()
+            return
+        }
+        val observation = SkipAdAccessibilityService.observeEvidence(pending.target)
+        if (observation == null || !observation.inPlayer || observation.scope != pending.scope) {
+            pendingSkip = null
+            adGate.cancelCandidate()
+            return
+        }
+        if (!pollingStarted || interactionActive || generation != interactionGeneration.get()) {
+            adGate.cancelCandidate()
+            pending.clearSince = null
+            return
+        }
+        val decision = adGate.evaluate(observation, now)
+        decision.recheckMs?.let { scheduleDetection(it, "rearm") }
+        if (observation.confidence == AdConfidence.NONE) {
+            val since = pending.clearSince ?: now.also { pending.clearSince = it }
+            if (now - since >= 800L) {
+                ConfigManager.get(this).incrementSkipCount()
+                Log.i(TAG, "AdPipeline confirmed t=$now request_to_confirm_ms=${now - pending.startedAt}")
+                pendingSkip = null
+                return
             }
-            adFirstDetectedAt = 0L
+        } else {
+            pending.clearSince = null
+            if (observation.isAd && !pending.fallbackTried && now - pending.startedAt >= 2000L) {
+                pending.fallbackTried = true
+                SkipAdAccessibilityService.trySkipByClick(pending.target) {
+                    pollingStarted && !interactionActive && generation == interactionGeneration.get()
+                }
+            }
+        }
+        if (now - pending.startedAt >= 6000L) {
+            Log.i(TAG, "AdPipeline unconfirmed t=$now")
+            pendingSkip = null
+        }
+    }
+
+    private fun tryAutoSkip(cause: String) {
+        val generation = interactionGeneration.get()
+        val target = ForegroundAppResolver.current(this)
+        if (!pollingStarted || interactionActive || generation != interactionGeneration.get()) {
+            adGate.cancelCandidate()
             return
         }
-
-        val config = ConfigManager.get(this)
-        // 前台门控：只在目标 App 前台时才跳过，其他应用一律不动作
-        val fgPkg = SkipAdAccessibilityService.getForegroundPackage()
-        if (fgPkg == null || !config.isAppEnabled(fgPkg)) {
-            adFirstDetectedAt = 0L   // 不在目标 App，重置确认计时
+        if (!SkipAdAccessibilityService.isRunning() || target == null ||
+            !ConfigManager.get(this).isAppEnabled(target)) {
+            adGate.cancelCandidate()
             return
         }
-
-        // 通过无障碍服务检测广告界面（文案已修正为抖音实际显示的文字）
-        val isAd = SkipAdAccessibilityService.isAdShowing()
-        if (!isAd) {
-            if (adFirstDetectedAt != 0L) Log.d(TAG, "广告信号消失，重置确认计时")
-            adFirstDetectedAt = 0L
+        val start = SystemClock.uptimeMillis()
+        val observation = SkipAdAccessibilityService.observeEvidence(target)
+        val now = SystemClock.uptimeMillis()
+        if (!pollingStarted || interactionActive || generation != interactionGeneration.get()) {
+            adGate.cancelCandidate()
             return
         }
-
-        // 双阶段确认：首次命中只记录，不跳
-        if (adFirstDetectedAt == 0L) {
-            adFirstDetectedAt = now
-            Log.d(TAG, "首次检测到广告，等待二次确认（${adConfirmDelayMs}ms）前台=$fgPkg")
-            return
+        val summary = "${observation?.scope} ${observation?.confidence} ${observation?.reason}"
+        if (summary != lastEvidenceSummary) {
+            lastEvidenceSummary = summary
+            Log.i(TAG, "AdPipeline observation t=$now scan_ms=${now - start} $summary")
         }
-        // 间隔不足则继续等
-        if (now - adFirstDetectedAt < adConfirmDelayMs) return
-
-        // 二次确认仍为广告 → 执行跳过
-        Log.d(TAG, "二次确认仍为广告，执行自动跳过（前台=$fgPkg）")
-        adFirstDetectedAt = 0L
-        triggerSkip(isAuto = true)
+        val decision = adGate.evaluate(observation, now)
+        if (decision.newCandidate) {
+            Log.i(TAG, "AdPipeline candidate t=$now cause=$cause scan_ms=${now - start} " +
+                "confidence=${observation?.confidence} reason=${observation?.reason}")
+        }
+        decision.recheckMs?.let { scheduleDetection(it, "confirm") }
+        if (decision.send) submitSkip(true, target, observation)
     }
 
     /**
      * 进入收起状态：变成小长方形贴边显示（不再藏 2/3 + 变透明）
      */
     private fun enterStealth() {
+        flushDragPosition()
         val button = floatingView ?: return
         val lp = layoutParams ?: return
         val density = resources.displayMetrics.density
@@ -517,6 +695,12 @@ class FloatingButtonService : Service() {
      * 若被系统意外移除则立即重建，保证悬浮窗始终可见。
      */
     private fun checkShouldShow() {
+        if (!Settings.canDrawOverlays(this)) {
+            pollingStarted = false
+            handler.removeCallbacks(foregroundChecker)
+            stopSelf()
+            return
+        }
         // 用户决定：悬浮窗启动后永久显示，不再随前台应用切换而隐藏。
         // 因此 shouldShow 恒为 true，不做任何前台检测与隐藏判断。
         // 同时每次轮询都校验 View 的真实挂载状态：若被系统意外移除（isAttachedToWindow=false），
@@ -524,7 +708,11 @@ class FloatingButtonService : Service() {
         val isAttached = floatingView?.isAttachedToWindow == true
         if (!isAttached) {
             Log.d(TAG, "永久显示: View未挂载(引用=${floatingView != null})，执行重建")
-            showFloatingButton()
+            if (!showFloatingButton()) {
+                pollingStarted = false
+                stopSelf()
+                return
+            }
         }
         // 确保 View 可见（即使之前被设为 GONE 也恢复）
         if (floatingView?.visibility != View.VISIBLE) {
@@ -533,138 +721,24 @@ class FloatingButtonService : Service() {
         isVisible = true
     }
 
-    /**
-     * 检查是否有目标 App 的活跃 MediaSession
-     */
-    private fun hasTargetMediaSession(config: ConfigManager): Boolean {
-        return try {
-            val componentName = ComponentName(this, MediaControlService::class.java)
-            val controllers: List<MediaController> = mediaSessionManager.getActiveSessions(componentName)
-            for (controller in controllers) {
-                if (config.isAppEnabled(controller.packageName)) {
-                    return true
-                }
-            }
-            false
-        } catch (e: Exception) {
-            Log.e(TAG, "检查活跃会话失败: ${e.message}")
-            false
-        }
-    }
-
-    /**
-     * 系统UI包名列表（不影响悬浮窗显示）
-     * 这些包名只是短暂出现（如下拉通知、手势导航、设置页），
-     * 不应导致悬浮窗被隐藏。
-     */
-    private val systemUiPackages = setOf(
-        "com.android.systemui",
-        "com.android.settings",
-        "com.android.permissioncontroller",
-        "com.android.incallui",
-        "com.android.dialer",
-        "com.android.systemui.recents"
-    )
-
-    /**
-     * 检查是否已授予「使用情况访问」权限
-     * PACKAGE_USAGE_STATS 是特殊权限，需用户在系统设置手动开启，无法运行时动态申请。
-     * 用 AppOpsManager 检查授权状态（API 23+，本项目 minSdk 24 满足）。
-     */
-    private fun hasUsageStatsPermission(): Boolean {
-        return try {
-            val appOps = getSystemService(Context.APP_OPS_SERVICE) as AppOpsManager
-            val mode = appOps.checkOpNoThrow(
-                AppOpsManager.OPSTR_GET_USAGE_STATS,
-                android.os.Process.myUid(),
-                packageName
-            )
-            mode == AppOpsManager.MODE_ALLOWED
-        } catch (e: Exception) {
-            Log.e(TAG, "检查使用情况访问权限失败: ${e.message}")
-            false
-        }
-    }
-
-    /**
-     * 通过 UsageStatsManager 获取当前前台应用包名
-     *
-     * 原理：queryUsageStats 返回近期各 app 的使用统计，取 lastTimeUsed（最后一次被使用/切前台时间）
-     * 最大的那个，即为当前或最近的前台应用。
-     * 相比无障碍服务的 rootInActiveWindow，此方式不受窗口焦点影响，跨进程切换更可靠，
-     * 且不依赖常驻无障碍服务。
-     */
-    private fun getForegroundPackageByUsageStats(): String? {
-        return try {
-            val usm = getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
-            val now = System.currentTimeMillis()
-            // 查最近 1 小时的统计（时间范围太短可能因系统聚合延迟返回空数据）
-            val stats: List<UsageStats> = usm.queryUsageStats(
-                UsageStatsManager.INTERVAL_DAILY, now - 3600_000L, now
-            )
-            if (stats.isEmpty()) return null
-            var recent: UsageStats? = null
-            for (s in stats) {
-                if (recent == null || s.lastTimeUsed > recent.lastTimeUsed) {
-                    recent = s
-                }
-            }
-            recent?.packageName
-        } catch (e: Exception) {
-            Log.e(TAG, "UsageStats 取前台包名失败: ${e.message}")
-            null
-        }
-    }
-
-    /**
-     * 判断当前前台应用的类别，决定悬浮窗显示策略
-     *
-     * 返回值：
-     *   1 = 本应用自身        → 无条件显示
-     *   2 = 系统UI（通知栏等） → 保持当前显示状态（不主动显隐）
-     *   3 = 已启用的目标 App  → 需有活跃 MediaSession 才显示
-     *   0 = 取不到 / 其他 App  → 隐藏
-     *
-     * 数据源优先级：
-     *   1. UsageStatsManager（已授权「使用情况访问」时，最可靠，不依赖无障碍）
-     *   2. 无障碍服务记录的前台包名（回退，双保险；用户若仍开着无障碍可补充）
-     *
-     * 关键修复：旧逻辑在取不到前台时默认返回 true（倾向显示），导致悬浮窗在桌面/其他 app
-     * 乱飘；现改为默认隐藏（返回 0），只在明确识别为本 app / 系统UI / 目标 app 时才显示。
-     */
-    private fun getForegroundCategory(config: ConfigManager): Int {
-        // 优先用 UsageStatsManager（不依赖无障碍服务）
-        var pkg: String? = null
-        if (hasUsageStatsPermission()) {
-            pkg = getForegroundPackageByUsageStats()
-        }
-        // 回退：无障碍服务记录的前台包名（双保险）
-        if (pkg.isNullOrEmpty()) {
-            pkg = SkipAdAccessibilityService.getForegroundPackage()
-        }
-
-        Log.d(TAG, "前台检测: 包名=$pkg, UsageStats授权=${hasUsageStatsPermission()}")
-
-        if (pkg.isNullOrEmpty()) {
-            // 两个数据源都取不到 → 无法判断，保守隐藏
-            return 0
-        }
-        if (pkg == packageName) return 1                          // 本 app
-        if (pkg in systemUiPackages) return 2                      // 系统 UI
-        return if (config.isAppEnabled(pkg)) 3 else 0              // 目标 app / 其他
-    }
-
     override fun onDestroy() {
         super.onDestroy()
+        pollingStarted = false
+        if (runningInstance === this) runningInstance = null
+        interactionActive = false
+        interactionGeneration.incrementAndGet()
+        floatingView?.removeCallbacks(dragPositionFrame)
+        dragFramePending = false
         handler.removeCallbacksAndMessages(null)
-        // 注销 MediaSession 监听器
-        try {
-            mediaSessionManager.removeOnActiveSessionsChangedListener(sessionsChangedListener)
-        } catch (e: Exception) {
-            Log.e(TAG, "注销监听器失败: ${e.message}")
+        detectionHandler.removeCallbacksAndMessages(null)
+        detectionHandler.post {
+            pendingSkip = null
+            adGate.cancelCandidate()
+            scheduledAt = null
         }
+        detectionThread.quitSafely()
         floatingView?.let {
-            windowManager.removeView(it)
+            if (it.isAttachedToWindow) runCatching { windowManager.removeView(it) }
             floatingView = null
         }
     }

@@ -67,6 +67,11 @@ class ConfigManager private constructor(context: Context) {
     }
 
     // ===== 颜色 =====
+    // AppCompat 夜间模式：-1 跟随系统，1 浅色，2 深色。
+    var themeMode: Int
+        get() = prefs.getInt("theme_mode", -1).takeIf { it in listOf(-1, 1, 2) } ?: -1
+        set(value) = prefs.edit().putInt("theme_mode", value.takeIf { it in listOf(-1, 1, 2) } ?: -1).apply()
+
     var buttonColor: Int
         get() = prefs.getInt(KEY_BUTTON_COLOR, DEFAULT_COLOR)
         set(value) = prefs.edit().putInt(KEY_BUTTON_COLOR, value).apply()
@@ -110,6 +115,14 @@ class ConfigManager private constructor(context: Context) {
     var autoSkip: Boolean
         get() = prefs.getBoolean(KEY_AUTO_SKIP, false)
         set(value) = prefs.edit().putBoolean(KEY_AUTO_SKIP, value).apply()
+
+    // 主动停止后不因 Activity.onResume 或系统重建再次启动。
+    var floatingEnabled: Boolean
+        get() = prefs.getBoolean("floating_enabled", true)
+        set(value) = prefs.edit().putBoolean("floating_enabled", value).apply()
+
+    val hasSavedPosition: Boolean
+        get() = prefs.contains(KEY_BUTTON_X) && prefs.contains(KEY_BUTTON_Y)
 
     // ===== 广告检测轮询间隔（毫秒）=====
     // 前台应用检测与广告识别的轮询周期：值越小响应越快，但越耗电。

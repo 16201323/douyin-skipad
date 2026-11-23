@@ -26,57 +26,32 @@ class MediaControlService : NotificationListenerService() {
     companion object {
         private const val TAG = "SkipAd_MediaCtrl"
 
-        /**
-         * 跳过广告（切到下一集 / 点击跳过按钮）
-         *
-         * 跳过策略（两种方式都尝试，任一成功即返回成功）：
-         * 1. MediaSession.skipToNext()：对抖音等实现了 MediaSession 回调的 App 有效
-         * 2. 无障碍服务点击"跳过"按钮：抖音广告界面可能有"跳过"按钮
-         *
-         * @return 是否成功跳过
-         */
-        fun skipDouyinAd(context: Context): Boolean {
-            // ---- 策略 1：MediaSession skipToNext ----
-            var mediaSkipped = false
+        enum class SkipResult { SENT, CLICKED, FAILED }
+
+        /** 请求已提交不等于跳过成功；调用者观察页面后再累计统计。 */
+        fun skipDouyinAd(context: Context, targetPackage: String, canProceed: () -> Boolean = { true }): SkipResult {
+            val config = ConfigManager.get(context)
+            if (!canProceed() || !config.isAppEnabled(targetPackage) ||
+                ForegroundAppResolver.current(context) != targetPackage) return SkipResult.FAILED
             try {
-                val sessionManager = context.getSystemService(Context.MEDIA_SESSION_SERVICE)
-                    as MediaSessionManager
-                val componentName = ComponentName(context, MediaControlService::class.java)
-                val controllers: List<MediaController> = sessionManager.getActiveSessions(componentName)
-
-                Log.d(TAG, "当前活跃 MediaSession 数量: ${controllers.size}")
-
-                for (controller in controllers) {
-                    val pkg = controller.packageName
-                    val config = ConfigManager.get(context)
-
-                    // 只控制用户启用的 App
-                    if (config.isAppEnabled(pkg)) {
-                        Log.d(TAG, "  -> 命中目标 App: $pkg，调用 skipToNext()")
-                        controller.transportControls.skipToNext()
-                        mediaSkipped = true
-                    } else {
-                        Log.d(TAG, "  跳过（未启用）: $pkg")
-                    }
+                val manager = context.getSystemService(Context.MEDIA_SESSION_SERVICE) as MediaSessionManager
+                val component = ComponentName(context, MediaControlService::class.java)
+                val controller = manager.getActiveSessions(component)
+                    .filter { it.packageName == targetPackage }
+                    .sortedByDescending { it.playbackState?.state == android.media.session.PlaybackState.STATE_PLAYING }
+                    .firstOrNull()
+                if (controller != null) {
+                    if (!canProceed()) return SkipResult.FAILED
+                    controller.transportControls.skipToNext()
+                    Log.d(TAG, "已向 $targetPackage 的一个会话发送切集指令，等待页面确认")
+                    return SkipResult.SENT
                 }
             } catch (e: Exception) {
-                Log.e(TAG, "MediaSession 跳过失败: ${e.message}", e)
+                Log.e(TAG, "发送媒体指令失败", e)
             }
-
-            // ---- 策略 2：无障碍服务点击"跳过"按钮 ----
-            // 抖音广告界面可能有"跳过"按钮（倒计时结束后出现）
-            Log.d(TAG, "尝试无障碍点击跳过按钮")
-            val a11ySkipped = SkipAdAccessibilityService.trySkipByClick()
-            if (a11ySkipped) {
-                Log.d(TAG, "无障碍点击跳过成功")
-            }
-
-            // 任一方式成功即返回成功
-            val success = mediaSkipped || a11ySkipped
-            if (!success) {
-                Log.w(TAG, "所有跳过方式均未成功")
-            }
-            return success
+            return if (canProceed() && SkipAdAccessibilityService.trySkipByClick(targetPackage, canProceed)) {
+                SkipResult.CLICKED
+            } else SkipResult.FAILED
         }
 
         /**

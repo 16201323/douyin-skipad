@@ -1,0 +1,14 @@
+<resources>
+    <color name="ui_background">#F4F6F3</color>
+    <color name="ui_surface">#FFFFFF</color>
+    <color name="ui_surface_alt">#EDF2EE</color>
+    <color name="ui_text">#192D27</color>
+    <color name="ui_secondary">#596C61</color>
+    <color name="ui_line">#DFE7E1</color>
+    <color name="ui_accent">#16745C</color>
+    <color name="ui_on_accent">#FFFFFF</color>
+    <color name="ui_accent_soft">#E0F0E7</color>
+    <color name="ui_hero">#DFEEE4</color>
+    <color name="ui_warning">#8A5B18</color>
+    <color name="ui_warning_soft">#FFF1D7</color>
+</resources>

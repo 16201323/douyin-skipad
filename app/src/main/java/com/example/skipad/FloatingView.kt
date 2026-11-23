@@ -7,6 +7,7 @@ import android.graphics.BitmapShader
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Matrix
+import android.graphics.Path
 import android.graphics.Paint
 import android.graphics.RectF
 import android.graphics.Shader
@@ -29,10 +30,20 @@ import java.io.File
 class FloatingView(context: Context) : View(context) {
 
     private val tag = "SkipAd_FloatingView"
+    private val backgroundPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val collapsedPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val textPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { textAlign = Paint.Align.CENTER }
+    private val drawingBounds = RectF()
+    private var bitmapShader: BitmapShader? = null
+    private var shaderBitmap: Bitmap? = null
+    private var shaderWidth = -1f
+    private var shaderHeight = -1f
+    private var pathShape = -1
+    private var pathWidth = -1f
+    private var pathHeight = -1f
+    private var shapePath: Path? = null
 
-    // 图片缓存：避免每帧重复解码
-    // 注意：重新选图时图片会覆盖保存到同一 cropped_image.png（path 不变但内容变了），
-    // 因此缓存命中条件除 path 相同外，还要求文件 lastModified 未变，否则会一直显示旧图。
+    // 拖动绘制只读缓存。图片覆盖同一路径时，配置刷新负责检查修改时间并使缓存失效。
     private var cachedBitmap: Bitmap? = null
     private var cachedPath: String? = null
     private var cachedLastModified = 0L
@@ -44,6 +55,13 @@ class FloatingView(context: Context) : View(context) {
      * 通知配置已变更，触发重绘（外部刷新样式时调用）
      */
     fun updateConfig() {
+        val path = ConfigManager.get(context).imagePath
+        if (path != cachedPath || (path != null && File(path).lastModified() != cachedLastModified)) {
+            cachedPath = null
+            cachedBitmap = null
+            bitmapShader = null
+            shaderBitmap = null
+        }
         invalidate()
     }
 
@@ -62,25 +80,37 @@ class FloatingView(context: Context) : View(context) {
         val density = resources.displayMetrics.density
         val w = width.toFloat()
         val h = height.toFloat()
+        drawingBounds.set(0f, 0f, w, h)
 
         // 收起态：直接画半透明圆角小长方形，不绘制文字/图片（贴边隐藏用）
         if (collapsed) {
-            val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            val paint = collapsedPaint.apply {
                 color = config.buttonColor
                 alpha = 153   // 0.6 透明度，提示这是收起状态
             }
-            canvas.drawRoundRect(RectF(0f, 0f, w, h), 3f * density, 3f * density, paint)
+            canvas.drawRoundRect(drawingBounds, 3f * density, 3f * density, paint)
             return
         }
 
         // 1. 绘制底层背景：图片模式用 BitmapShader，否则纯色
-        val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+        val bgPaint = backgroundPaint
+        bgPaint.shader = null
         if (config.contentMode == ConfigManager.CONTENT_IMAGE && !config.imagePath.isNullOrEmpty()) {
             val bmp = loadBitmap(config.imagePath!!)
             if (bmp != null) {
-                val shader = BitmapShader(bmp, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP)
-                shader.setLocalMatrix(buildCenterCropMatrix(bmp, w, h))
+                if (shaderBitmap !== bmp || bitmapShader == null) {
+                    shaderBitmap = bmp
+                    bitmapShader = BitmapShader(bmp, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP)
+                    shaderWidth = -1f
+                }
+                val shader = bitmapShader!!
+                if (shaderWidth != w || shaderHeight != h) {
+                    shader.setLocalMatrix(buildCenterCropMatrix(bmp, w, h))
+                    shaderWidth = w
+                    shaderHeight = h
+                }
                 bgPaint.shader = shader
+                bgPaint.alpha = config.buttonAlpha
             } else {
                 // 图片加载失败：回退为纯色背景，避免悬浮窗空白
                 bgPaint.color = config.buttonColor
@@ -95,8 +125,9 @@ class FloatingView(context: Context) : View(context) {
         // 2. 绘制上层文字：文字非空时叠加在背景/图片之上（文字清空即纯图片）
         val text = config.buttonText
         if (text.isNotEmpty()) {
-            val textPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
+            textPaint.apply {
                 color = Color.BLACK
+                alpha = config.buttonAlpha
                 // config.textSize 单位为 sp，Canvas 的 textSize 单位为 px，乘以 density 转换
                 textSize = config.textSize * density
                 textAlign = Paint.Align.CENTER
@@ -119,14 +150,20 @@ class FloatingView(context: Context) : View(context) {
                 canvas.drawCircle(w / 2, h / 2, radius, paint)
             }
             ConfigManager.SHAPE_ROUND_RECT -> {
-                val rect = RectF(0f, 0f, w, h)
+                val rect = drawingBounds
                 val radius = 16 * density
                 canvas.drawRoundRect(rect, radius, radius, paint)
             }
             else -> {
                 // 爱心/五角星/云朵/三角形：用 ShapePainter 构建 Path 绘制；
                 // SHAPE_SQUARE（buildPath 返回 null）：方形无圆角
-                val path = ShapePainter.buildPath(shape, w, h)
+                if (pathShape != shape || pathWidth != w || pathHeight != h) {
+                    shapePath = ShapePainter.buildPath(shape, w, h)
+                    pathShape = shape
+                    pathWidth = w
+                    pathHeight = h
+                }
+                val path = shapePath
                 if (path != null) {
                     canvas.drawPath(path, paint)
                 } else {
@@ -157,10 +194,9 @@ class FloatingView(context: Context) : View(context) {
      * 目标尺寸为 View 当前大小，先读边界计算 inSampleSize 降采样，再解码
      */
     private fun loadBitmap(path: String): Bitmap? {
+        if (path == cachedPath) return cachedBitmap
         val file = File(path)
         val lastModified = file.lastModified()
-        // 缓存命中：path 相同且文件未被修改（重新选图覆盖文件会改变 lastModified，从而失效缓存）
-        if (path == cachedPath && lastModified == cachedLastModified) return cachedBitmap
         try {
             val targetW = width.coerceAtLeast(1)
             val targetH = height.coerceAtLeast(1)
