@@ -13,46 +13,17 @@ import android.os.Build
 import androidx.core.app.NotificationCompat
 import androidx.core.content.pm.PackageInfoCompat
 import java.io.File
-import java.net.HttpURLConnection
-import java.net.URL
 import java.security.MessageDigest
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 
 internal fun interface UpdateSource { fun latest(): UpdateRelease }
 
-internal class GitHubUpdateSource : UpdateSource {
-    override fun latest(): UpdateRelease {
-        val connection = URL(UpdateRelease.API_URL).openConnection() as HttpURLConnection
-        try {
-            connection.connectTimeout = 10000
-            connection.readTimeout = 15000
-            connection.setRequestProperty("Accept", "application/vnd.github+json")
-            connection.setRequestProperty("X-GitHub-Api-Version", "2022-11-28")
-            connection.setRequestProperty("User-Agent", "douyin-skipad-android")
-            require(connection.responseCode == 200) { "暂时无法获取 GitHub 版本信息，请稍后重试" }
-            val bytes = connection.inputStream.use { it.readBytesLimited(512 * 1024) }
-            return UpdateRelease.parse(bytes.toString(Charsets.UTF_8))
-        } finally { connection.disconnect() }
-    }
-
-    private fun java.io.InputStream.readBytesLimited(limit: Int): ByteArray {
-        val result = java.io.ByteArrayOutputStream()
-        val buffer = ByteArray(8192)
-        while (true) {
-            val count = read(buffer)
-            if (count < 0) break
-            require(result.size() + count <= limit) { "版本信息超过允许大小" }
-            result.write(buffer, 0, count)
-        }
-        return result.toByteArray()
-    }
-}
-
 /** 所有联网、下载查询及文件校验由更新线程调用，不占用广告检测线程。 */
-internal class AppUpdateEngine(val context: Context, private val source: UpdateSource = GitHubUpdateSource(),
+internal class AppUpdateEngine(val context: Context, private val source: UpdateSource = UpdateSources.default(),
+    staticOrigin: String = BuildConfig.STATIC_UPDATE_ORIGIN,
     private val archiveCheck: ((File, UpdateRelease) -> String?)? = null) {
-    val store = UpdateStore(context)
+    val store = UpdateStore(context, staticOrigin)
     private val downloads get() = context.getSystemService(DownloadManager::class.java)
     val currentVersion: String get() = context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "0.0.0"
 
@@ -61,7 +32,7 @@ internal class AppUpdateEngine(val context: Context, private val source: UpdateS
     fun check(force: Boolean = false, now: Long = System.currentTimeMillis()): UpdateView {
         if (!force && (!store.automatic || (store.lastCheck > 0 && now - store.lastCheck in 0 until CHECK_INTERVAL))) return refresh()
         store.lastCheck = now
-        store.state(UpdatePhase.CHECKING, "正在检查 GitHub 正式版本…")
+        store.state(UpdatePhase.CHECKING, "正在检查新版本…")
         return try {
             val release = source.latest()
             val installedVersion = ReleaseVersion.parse(currentVersion)
@@ -86,7 +57,7 @@ internal class AppUpdateEngine(val context: Context, private val source: UpdateS
             refresh()
         } catch (e: Exception) {
             val message = when (e) {
-                is java.io.IOException -> "无法连接 GitHub，请检查网络后重试"
+                is java.io.IOException -> "无法连接更新来源，请检查网络后重试"
                 is org.json.JSONException -> "版本信息不完整，请稍后重试或查看历史版本"
                 else -> e.message?.take(180) ?: "检查失败，请检查网络后重试"
             }
@@ -98,14 +69,14 @@ internal class AppUpdateEngine(val context: Context, private val source: UpdateS
     fun downloadFile(release: UpdateRelease): File = File(
         requireNotNull(context.getExternalFilesDir("updates")) { "下载目录暂不可用" }, release.fileName)
 
-    fun startDownload(wifiOnly: Boolean): UpdateView {
+    fun startDownload(wifiOnly: Boolean, useFallback: Boolean = false): UpdateView {
         val release = store.release ?: return view()
         if (store.downloadId >= 0 || store.phase == UpdatePhase.READY) return refresh()
         return try {
             require(release.version > requireNotNull(ReleaseVersion.parse(currentVersion))) { "该版本不高于当前版本" }
             val file = downloadFile(release)
             if (file.exists()) require(file.delete()) { "旧安装包无法清理，请稍后重试" }
-            val request = DownloadManager.Request(Uri.parse(release.url))
+            val request = DownloadManager.Request(Uri.parse(if (useFallback) requireNotNull(release.fallbackUrl) else release.url))
                 .setTitle("抖音跳广告助手 ${release.version}")
                 .setDescription(if (wifiOnly) "更新包下载 · 仅 Wi-Fi" else "更新包下载 · 允许移动网络")
                 .setMimeType("application/vnd.android.package-archive")
@@ -117,6 +88,7 @@ internal class AppUpdateEngine(val context: Context, private val source: UpdateS
                 .setDestinationInExternalFilesDir(context, "updates", release.fileName)
             store.downloadId = downloads.enqueue(request)
             store.downloadWifiOnly = wifiOnly
+            store.downloadFallback = useFallback
             store.cancelledKey = ""
             store.state(UpdatePhase.QUEUED, if (wifiOnly) "等待 Wi-Fi 或开始下载" else "已加入下载，允许使用移动网络")
             refresh()
@@ -157,6 +129,7 @@ internal class AppUpdateEngine(val context: Context, private val source: UpdateS
     private fun discardDownload() {
         if (store.downloadId >= 0) runCatching { downloads.remove(store.downloadId) }
         store.downloadId = -1
+        store.downloadFallback = false
         store.release?.let { runCatching { downloadFile(it).delete() } }
         context.getSystemService(NotificationManager::class.java).cancel(UPDATE_NOTIFICATION)
     }
@@ -196,9 +169,27 @@ internal class AppUpdateEngine(val context: Context, private val source: UpdateS
                         }
                     }
                     DownloadManager.STATUS_FAILED -> {
-                        discardDownload(); store.state(UpdatePhase.ERROR, "下载失败，请检查网络后重新下载")
+                        val reason = cursor.getInt(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_REASON))
+                        val canRetry = reason !in listOf(DownloadManager.ERROR_INSUFFICIENT_SPACE, DownloadManager.ERROR_DEVICE_NOT_FOUND,
+                            DownloadManager.ERROR_FILE_ERROR, DownloadManager.ERROR_FILE_ALREADY_EXISTS)
+                        if (release.fallbackUrl != null && !store.downloadFallback && canRetry) {
+                            val wifiOnly = store.downloadWifiOnly
+                            discardDownload()
+                            return startDownload(wifiOnly, useFallback = true)
+                        }
+                        discardDownload(); store.state(UpdatePhase.ERROR, if (reason == DownloadManager.ERROR_INSUFFICIENT_SPACE)
+                            "手机存储空间不足，请清理后重新下载" else "下载来源连接失败，请稍后重新下载")
                     }
                     DownloadManager.STATUS_RUNNING -> store.state(UpdatePhase.DOWNLOADING, "正在下载更新包")
+                    DownloadManager.STATUS_PAUSED -> {
+                        val reason = cursor.getInt(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_REASON))
+                        store.state(UpdatePhase.QUEUED, when (reason) {
+                            DownloadManager.PAUSED_WAITING_TO_RETRY -> "下载连接暂时失败，系统正在等待重试"
+                            DownloadManager.PAUSED_QUEUED_FOR_WIFI -> "等待可用的 Wi-Fi 网络"
+                            DownloadManager.PAUSED_WAITING_FOR_NETWORK -> "等待网络恢复后继续下载"
+                            else -> "下载已暂停，等待系统继续"
+                        })
+                    }
                     else -> store.state(UpdatePhase.QUEUED, "等待网络、Wi-Fi 或系统继续下载")
                 }
                 UpdateView(store.phase, store.message, release, completed, total)

@@ -32,6 +32,7 @@ internal class AppUpdateActivity : SettingsPageActivity() {
     private lateinit var status: TextView
     private lateinit var version: TextView
     private lateinit var checkedAt: TextView
+    private lateinit var sourceInfo: TextView
     private lateinit var notes: TextView
     private lateinit var progress: ProgressBar
     private lateinit var check: Button
@@ -71,6 +72,8 @@ internal class AppUpdateActivity : SettingsPageActivity() {
         current.addView(status)
         version = ui.label("", 12f, ui.secondary)
         current.addView(ui.space(8)); current.addView(version)
+        sourceInfo = ui.label("", 11f, ui.secondary)
+        current.addView(ui.space(8)); current.addView(sourceInfo)
         progress = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply { max = 100; visibility = View.GONE }
         current.addView(progress, LinearLayout.LayoutParams(-1, ui.dp(12)).apply { topMargin = ui.dp(14) })
         checkedAt = ui.label("", 11f, ui.secondary)
@@ -78,7 +81,7 @@ internal class AppUpdateActivity : SettingsPageActivity() {
         current.addView(ui.space(18))
         check = ui.button("检查更新", true) {
             if (!busy) {
-                busy = true; status.text = "正在检查 GitHub 正式版本…"; check.isEnabled = false
+                busy = true; status.text = "正在检查新版本…"; check.isEnabled = false
                 AppUpdates.check(this, true) { state -> runOnUiThread { if (!isDestroyed) { busy = false; show(state) } } }
             }
         }.apply { tag = "check_update" }
@@ -104,7 +107,7 @@ internal class AppUpdateActivity : SettingsPageActivity() {
         }
         preferences.addView(automatic)
         preferences.addView(ui.space(5))
-        preferences.addView(ui.label("联网时定期检查。系统省电或后台限制可能延迟检查。", 12f, ui.secondary))
+        preferences.addView(ui.label("联网时定期检查，按下面选择的网络下载。下载完成后通知安装；系统省电或后台限制可能延迟检查。", 12f, ui.secondary))
         preferences.addView(ui.space(18)); preferences.addView(ui.divider()); preferences.addView(ui.space(16))
         preferences.addView(ui.label("更新包下载方式", 16f, medium = true))
         val networks = RadioGroup(this).apply { orientation = RadioGroup.VERTICAL }
@@ -142,6 +145,11 @@ internal class AppUpdateActivity : SettingsPageActivity() {
 
     private fun show(state: UpdateView) {
         status.text = state.message
+        sourceInfo.text = state.release?.let {
+            if (it.staticOrigin.isNotEmpty() && !engine.store.downloadFallback) "下载来源：更新站点 · ${Uri.parse(it.url).host}"
+            else "下载来源：GitHub 备用"
+        } ?: if (BuildConfig.STATIC_UPDATE_ORIGIN.isNotBlank()) "更新来源：更新站点优先，GitHub 备用"
+            else "更新来源：GitHub（静态更新站点尚未配置）"
         version.text = state.release?.let { "最新版本 ${it.version} · ${String.format(Locale.getDefault(), "%.2f MB", it.bytes / 1048576.0)}" }.orEmpty()
         val last = engine.store.lastCheck
         checkedAt.text = if (last > 0) "最近检查：" + SimpleDateFormat("MM-dd HH:mm", Locale.getDefault()).format(Date(last)) else "尚未检查"

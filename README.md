@@ -258,3 +258,10 @@ adb install -r app/build/outputs/apk/debug/douyin-skipad-debug.apk
 - 安装前重新核对来源、SHA256、文件大小、包名、版本号与当前应用签名。后续发布需沿用当前签名；当前 release 复用本机 debug 签名，其他电脑新生成的 debug 密钥不能作为同签名更新。
 - 仅查询固定公开仓库，不内置 GitHub 令牌；保留历史版本打开和复制入口。下载目录由仅限 updates 子目录的 FileProvider 提供只读安装访问。
 - 88项回归测试通过，Lint 0错误、10警告；更新页面浅色/深色真机检查通过。验证版用于与最终版之间的真实更新下载检查，系统安装确认仍按设备要求处理。
+
+## 1.5.0 无密钥静态自动更新
+
+- 支持从公开静态 JSON 检查版本，按现有网络偏好自动下载 APK，不需要客户端账号、API Key 或自建服务端。
+- 静态站点优先，GitHub 版本与同版本安装包作为备用；下载连接等待、网络等待和 Wi-Fi 等待分别显示。
+- 静态清单严格限制来源和版本路径，新增 versionCode 一致性校验，保留大小、SHA256、包名与签名验证。
+- [下载站点](https://douyin-skipad-updates.pages.dev)；[发布维护说明](docs/static-update-publishing.md)。旧版 1.4.1 首次需手动覆盖安装新版，以后使用新来源。

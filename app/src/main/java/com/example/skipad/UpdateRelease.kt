@@ -20,16 +20,50 @@ internal enum class UpdateNetwork(val label: String) {
 }
 
 internal data class UpdateRelease(val tag: String, val version: ReleaseVersion, val assetId: Long,
-    val url: String, val bytes: Long, val sha256: String, val notes: String) {
-    val key: String get() = "$tag:$assetId:$sha256"
+    val url: String, val bytes: Long, val sha256: String, val notes: String,
+    val staticOrigin: String = "", val expectedVersionCode: Long? = null) {
+    val fallbackUrl: String? get() = if (staticOrigin.isNotEmpty()) "https://github.com/$REPOSITORY/releases/download/$tag/$APK_NAME" else null
+    val key: String get() = "$tag:$sha256"
     val fileName: String get() = "skipad-$version-$assetId.apk"
 
-    fun json(): String = JSONObject().put("tag_name", tag).put("body", notes).put("draft", false)
+    fun json(): String = if (staticOrigin.isNotEmpty()) JSONObject().put("schemaVersion", 1)
+        .put("origin", staticOrigin).put("packageName", "com.example.skipad").put("versionName", version.toString())
+        .put("versionCode", expectedVersionCode).put("apk", "releases/$tag/$APK_NAME")
+        .put("size", bytes).put("sha256", sha256).put("notes", notes).toString()
+        else JSONObject().put("tag_name", tag).put("body", notes).put("draft", false)
         .put("prerelease", false).put("assets", JSONArray().put(JSONObject().put("id", assetId)
             .put("name", APK_NAME).put("browser_download_url", url).put("size", bytes)
             .put("digest", "sha256:$sha256"))).toString()
 
     companion object {
+        fun parseStatic(raw: String, origin: String): UpdateRelease {
+            require(raw.length <= 512 * 1024) { "版本信息过大" }
+            val base = URI(origin)
+            require(base.scheme == "https" && !base.host.isNullOrBlank() && base.rawAuthority == base.host &&
+                base.rawPath.isEmpty() && base.query == null && base.fragment == null) { "更新站点尚未正确配置" }
+            val data = JSONObject(raw)
+            require(data.opt("schemaVersion") == 1 && data.getString("packageName") == "com.example.skipad") { "版本信息不属于本应用" }
+            require(!data.has("origin") || data.getString("origin") == origin) { "保存的更新来源与配置不一致" }
+            val version = requireNotNull(ReleaseVersion.parse(data.getString("versionName"))) { "版本格式不支持" }
+            val tag = "v$version"
+            val path = data.getString("apk")
+            require(path == "releases/$tag/$APK_NAME") { "安装包来源或路径不匹配" }
+            fun positiveInteger(key: String): Long {
+                val value = data.get(key)
+                require(value is Number && Regex("^[0-9]+$").matches(value.toString())) { "版本数值无效" }
+                return value.toString().toLong().also { require(it > 0) { "版本数值无效" } }
+            }
+            val code = positiveInteger("versionCode")
+            require(code <= Int.MAX_VALUE) { "版本编号无效" }
+            val bytes = positiveInteger("size")
+            require(bytes <= MAX_BYTES) { "安装包大小无效" }
+            val digest = data.getString("sha256").lowercase()
+            require(Regex("^[0-9a-f]{64}$").matches(digest)) { "发布版本缺少有效校验信息" }
+            return UpdateRelease(tag, version, code, "$origin/$path", bytes, digest, data.optString("notes").take(4000), origin, code)
+        }
+
+        fun parseStored(raw: String, origin: String = BuildConfig.STATIC_UPDATE_ORIGIN): UpdateRelease =
+            if (JSONObject(raw).has("schemaVersion")) parseStatic(raw, origin) else parse(raw)
         const val REPOSITORY = "16201323/douyin-skipad"
         const val RELEASES_URL = "https://github.com/$REPOSITORY/releases"
         const val API_URL = "https://api.github.com/repos/$REPOSITORY/releases/latest"
@@ -72,6 +106,7 @@ internal object UpdateVerifier {
         archive == null -> "无法读取安装包信息"
         archive.packageName != installed.packageName -> "安装包不属于本应用"
         archive.versionCode <= installed.versionCode -> "安装包版本未高于当前版本"
+        release.expectedVersionCode != null && archive.versionCode != release.expectedVersionCode -> "安装包版本编号与发布信息不一致"
         ReleaseVersion.parse(archive.versionName) != release.version -> "安装包版本与发布信息不一致"
         installed.signers.isEmpty() || archive.signers != installed.signers -> "安装包签名与当前应用不一致"
         else -> null

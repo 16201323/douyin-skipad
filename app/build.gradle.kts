@@ -1,3 +1,5 @@
+import java.net.URI
+
 // app/build.gradle.kts
 plugins {
     id("com.android.application")
@@ -8,20 +10,36 @@ android {
     namespace = "com.example.skipad"
     compileSdk = 34
 
+    buildFeatures { buildConfig = true }
+
     defaultConfig {
         applicationId = "com.example.skipad"
         minSdk = 24          // 兼容 Android 7.0+
         targetSdk = 34
-        versionCode = 11
-        versionName = "1.4.1"
+        versionCode = 12
+        versionName = "1.5.0"
+        val staticOrigin = providers.gradleProperty("staticUpdateBaseUrl").orElse("").get().trim().trimEnd('/')
+        require(staticOrigin.isEmpty() || runCatching {
+            val uri = URI(staticOrigin)
+            uri.scheme == "https" && !uri.host.isNullOrBlank() && uri.rawAuthority == uri.host && uri.rawPath.isEmpty() && uri.query == null && uri.fragment == null
+        }.getOrDefault(false)) { "staticUpdateBaseUrl must be an HTTPS origin without credentials, path or query" }
+        buildConfigField("String", "STATIC_UPDATE_ORIGIN", "\"$staticOrigin\"")
         testInstrumentationRunner = "com.example.skipad.UiPreviewInstrumentation"
+    }
+
+    val ciSigningFile = System.getenv("SKIPAD_SIGNING_STORE_FILE")
+    if (!ciSigningFile.isNullOrBlank()) signingConfigs.create("ciRelease") {
+        storeFile = file(ciSigningFile)
+        storePassword = System.getenv("SKIPAD_SIGNING_STORE_PASSWORD") ?: "android"
+        keyAlias = System.getenv("SKIPAD_SIGNING_KEY_ALIAS") ?: "androiddebugkey"
+        keyPassword = System.getenv("SKIPAD_SIGNING_KEY_PASSWORD") ?: "android"
     }
 
     buildTypes {
         release {
             isMinifyEnabled = false
-            // 个人自用项目，release 直接复用 debug 签名，省去 keystore 配置与管理
-            signingConfig = signingConfigs.getByName("debug")
+            // 本地沿用现有密钥；CI 通过私密配置恢复同一密钥，禁止换签名发布。
+            signingConfig = signingConfigs.getByName(if (ciSigningFile.isNullOrBlank()) "debug" else "ciRelease")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
