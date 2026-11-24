@@ -168,6 +168,7 @@ class RegressionTest {
     }
 
     @Test fun startWithoutOverlayPermissionStopsInsteadOfCrashing() {
+        ConfigManager.get(context).apply { autoSkip = false; floatingEnabled = true }
         ShadowSettings.setCanDrawOverlays(false)
         val svc = floatingServiceOnTestLooper().get()
         val mode = svc.onStartCommand(Intent(context, svc.javaClass).setAction(FloatingButtonService.ACTION_START), 0, 1)
@@ -191,8 +192,7 @@ class RegressionTest {
         val controller = Robolectric.buildActivity(MainActivity::class.java).create()
         val activity = controller.get()
         activity.javaClass.getDeclaredMethod("stopFloatingButton").apply { isAccessible = true }.invoke(activity)
-        assertFalse(context.getSharedPreferences("skip_ad_config", Context.MODE_PRIVATE)
-            .getBoolean("floating_enabled", true))
+        assertFalse(ConfigManager.get(context).floatingEnabled)
         controller.destroy()
     }
 

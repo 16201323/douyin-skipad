@@ -4,6 +4,7 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
+import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.graphics.PixelFormat
@@ -24,6 +25,7 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
 import android.widget.Toast
+import android.widget.RemoteViews
 
 /**
  * 悬浮按钮服务
@@ -51,6 +53,10 @@ class FloatingButtonService : Service() {
         const val ACTION_START = "com.example.skipad.START_FLOATING"
         const val ACTION_STOP = "com.example.skipad.STOP_FLOATING"
         const val ACTION_REFRESH = "com.example.skipad.REFRESH_FLOATING"
+        const val ACTION_PAUSE_AUTO = "com.example.skipad.PAUSE_AUTO"
+        const val ACTION_RESUME_AUTO = "com.example.skipad.RESUME_AUTO"
+        const val ACTION_SHOW_FLOATING = "com.example.skipad.SHOW_FLOATING"
+        const val ACTION_HIDE_FLOATING = "com.example.skipad.HIDE_FLOATING"
         @Volatile private var runningInstance: FloatingButtonService? = null
 
         internal fun isRunning(): Boolean = runningInstance?.pollingStarted == true
@@ -75,7 +81,6 @@ class FloatingButtonService : Service() {
     private var normalX = 0                 // 收起前的 x 坐标（恢复位置用，修 Bug1）
     private var normalWidth = 0             // 收起前的宽度（恢复尺寸用）
     private var normalHeight = 0            // 收起前的高度（恢复尺寸用）
-    @Volatile private var isVisible = true            // 悬浮窗是否可见
     private var screenWidth = 0
 
     private val handler = Handler(Looper.getMainLooper())
@@ -104,6 +109,7 @@ class FloatingButtonService : Service() {
     private var scheduledAt: Long? = null
     private var scheduledCause = "poll"
     @Volatile private var lastDetectionAt = 0L
+    private var lastNotificationState = ""
     private var lastEvidenceSummary: String? = null
     private val detectionTask = Runnable {
         scheduledAt = null
@@ -142,11 +148,6 @@ class FloatingButtonService : Service() {
             return
         }
         lastDetectionAt = SystemClock.uptimeMillis()
-        if (!Settings.canDrawOverlays(this)) {
-            pollingStarted = false
-            stopSelf()
-            return
-        }
         try {
             val config = ConfigManager.get(this)
             val pending = pendingSkip
@@ -155,7 +156,7 @@ class FloatingButtonService : Service() {
                     pendingSkip = null
                     adGate.cancelCandidate()
                 } else verifyPendingSkip()
-            } else if (config.autoSkip && isVisible) {
+            } else if (config.autoSkip) {
                 tryAutoSkip(cause)
             } else adGate.cancelCandidate()
             if (pendingSkip != null) scheduleDetection(100L, "verify")
@@ -178,13 +179,22 @@ class FloatingButtonService : Service() {
             val config = ConfigManager.get(this@FloatingButtonService)
             try {
                 checkShouldShow()
+                val notificationState = "${config.autoSkip}:${SkipAdAccessibilityService.isRunning()}:${config.floatingEnabled}:${Settings.canDrawOverlays(this@FloatingButtonService)}"
+                if (notificationState != lastNotificationState) {
+                    if (Build.VERSION.SDK_INT < 33 || checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) ==
+                        android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                        getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, createNotification())
+                    }
+                    lastNotificationState = notificationState
+                }
                 runDetection("poll")
             } catch (e: Exception) {
                 Log.e(TAG, "悬浮窗保活检测异常", e)
             }
 
             // 无论是否异常，都继续下一轮轮询；间隔取用户设置的「广告检测间隔」
-            if (pollingStarted) handler.postDelayed(this, config.detectIntervalMs.toLong())
+            if (pollingStarted && (config.autoSkip || config.floatingEnabled))
+                handler.postDelayed(this, config.detectIntervalMs.toLong())
         }
     }
 
@@ -204,32 +214,41 @@ class FloatingButtonService : Service() {
         val config = ConfigManager.get(this)
         if (intent?.action == ACTION_STOP) {
             config.floatingEnabled = false
+            config.autoSkip = false
+            pollingStarted = false
             stopSelf()
             return START_NOT_STICKY
         }
-        if (intent?.action == ACTION_REFRESH) {
-            if (floatingView?.isAttachedToWindow == true) refreshButtonStyle()
-            else stopSelf()
-            return if (pollingStarted) START_STICKY else START_NOT_STICKY
+        if (intent?.action == ACTION_PAUSE_AUTO) config.autoSkip = false
+        if (intent?.action == ACTION_RESUME_AUTO) config.autoSkip = true
+        if (intent?.action == ACTION_SHOW_FLOATING) config.floatingEnabled = true
+        if (intent?.action == ACTION_HIDE_FLOATING) config.floatingEnabled = false
+        // 暂停立刻作废正在查询的结果，避免队列清理之前仍发送请求。
+        if (!config.autoSkip) {
+            interactionGeneration.incrementAndGet()
+            detectionHandler.post {
+                pendingSkip = null
+                adGate.cancelCandidate()
+                detectionHandler.removeCallbacks(detectionTask)
+                scheduledAt = null
+            }
         }
-        if (!Settings.canDrawOverlays(this) || (intent == null && !config.floatingEnabled)) {
-            Log.w(TAG, "未启动悬浮窗：缺少权限或用户已停止")
+        if ((intent == null && !config.autoSkip && !config.floatingEnabled) ||
+            (!config.autoSkip && config.floatingEnabled && !Settings.canDrawOverlays(this))) {
             stopSelf()
             return START_NOT_STICKY
         }
         try {
             startForeground(NOTIFICATION_ID, createNotification())
-            if (!showFloatingButton()) {
-                stopSelf()
-                return START_NOT_STICKY
-            }
-            config.floatingEnabled = true
+            checkShouldShow()
+            if (intent?.action == ACTION_REFRESH && floatingView?.isAttachedToWindow == true) refreshButtonStyle()
             if (!pollingStarted) {
                 pollingStarted = true
-                handler.post(foregroundChecker)
                 Log.d(TAG, "启动唯一检测轮询")
                 Log.i(TAG, "AdPipeline started auto=${config.autoSkip} fallback_ms=${config.detectIntervalMs}")
             }
+            handler.removeCallbacks(foregroundChecker)
+            if (config.autoSkip || config.floatingEnabled) handler.post(foregroundChecker)
         } catch (e: Exception) {
             Log.e(TAG, "启动悬浮窗失败", e)
             stopSelf()
@@ -239,19 +258,56 @@ class FloatingButtonService : Service() {
     }
 
     private fun createNotification(): Notification {
+        val config = ConfigManager.get(this)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
-                CHANNEL_ID, "跳广告悬浮按钮", NotificationManager.IMPORTANCE_LOW
+                CHANNEL_ID, "广告跳过服务", NotificationManager.IMPORTANCE_LOW
             ).apply {
-                description = "显示跳广告悬浮按钮"
+                description = "自动跳过状态与暂停恢复控制"
                 setShowBadge(false)
             }
             getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
         }
+        val automaticStatus = if (!config.autoSkip) "自动跳过已暂停"
+            else if (SkipAdAccessibilityService.isRunning()) "自动跳过运行中" else "等待无障碍服务连接"
+        val automaticAction = PendingIntent.getService(this, 1, Intent(this, FloatingButtonService::class.java).apply {
+            action = if (config.autoSkip) ACTION_PAUSE_AUTO else ACTION_RESUME_AUTO
+        }, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+        val showButton = config.floatingEnabled && Settings.canDrawOverlays(this)
+        val floatingAction = if (!showButton && !Settings.canDrawOverlays(this)) {
+            // 缺授权时直接打开 Activity 引导，不通过服务间接拉起设置页。
+            PendingIntent.getActivity(this, 2, Intent(this, MainActivity::class.java).apply {
+                action = ACTION_SHOW_FLOATING
+                addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+            }, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+        } else PendingIntent.getService(this, 2, Intent(this, FloatingButtonService::class.java).apply {
+            action = if (showButton) ACTION_HIDE_FLOATING else ACTION_SHOW_FLOATING
+        }, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+        fun controls(expanded: Boolean) = RemoteViews(packageName,
+            if (expanded) R.layout.notification_expanded else R.layout.notification_compact).apply {
+            setTextViewText(R.id.notification_status, if (expanded) automaticStatus
+                else if (!config.autoSkip) "已暂停" else if (SkipAdAccessibilityService.isRunning()) "自动运行" else "待连接")
+            setTextViewText(R.id.notification_auto, if (config.autoSkip) "暂停识别" else "恢复识别")
+            setTextViewText(R.id.notification_floating, if (showButton) "隐藏悬浮窗" else "显示悬浮窗")
+            setOnClickPendingIntent(R.id.notification_auto, automaticAction)
+            setOnClickPendingIntent(R.id.notification_floating, floatingAction)
+            if (expanded) setTextViewText(R.id.notification_detail,
+                if (showButton) "手动按钮已显示 · 两个开关可独立控制" else "手动按钮已隐藏 · 自动识别可独立运行")
+        }
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("抖音跳广告助手")
-            .setContentText("悬浮按钮已运行")
-            .setSmallIcon(android.R.drawable.ic_media_next)
+            .setContentText(automaticStatus)
+            .setSmallIcon(R.drawable.ic_skip)
+            .setColor(getColor(R.color.ui_accent))
+            .setShowWhen(false)
+            .setStyle(NotificationCompat.DecoratedCustomViewStyle())
+            .setCustomContentView(controls(false))
+            .setCustomBigContentView(controls(true))
+            .setContentIntent(PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java),
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE))
+            .setCategory(NotificationCompat.CATEGORY_SERVICE)
+            .setOngoing(true)
+            .setOnlyAlertOnce(true)
             .build()
     }
 
@@ -484,7 +540,8 @@ class FloatingButtonService : Service() {
     }
 
     private fun submitSkip(isAuto: Boolean, target: String?, expected: AdObservation?) {
-        if (!pollingStarted || interactionActive || pendingSkip != null) return
+        if (!pollingStarted || interactionActive || pendingSkip != null ||
+            (isAuto && !ConfigManager.get(this).autoSkip)) return
         val generation = interactionGeneration.get()
         if (target == null || !ConfigManager.get(this).isAppEnabled(target)) {
             if (!isAuto) showSkipMessage("请先打开已勾选的抖音应用")
@@ -497,13 +554,13 @@ class FloatingButtonService : Service() {
             adGate.cancelCandidate()
             return
         }
-        if (!pollingStarted || interactionActive || generation != interactionGeneration.get()) {
+        if (!canContinueSkip(isAuto, generation)) {
             adGate.cancelCandidate()
             return
         }
         val now = SystemClock.uptimeMillis()
         val result = MediaControlService.skipDouyinAd(this, target) {
-            pollingStarted && !interactionActive && generation == interactionGeneration.get()
+            canContinueSkip(isAuto, generation)
         }
         if (result == MediaControlService.Companion.SkipResult.FAILED) {
             adGate.markFailed(now)
@@ -524,6 +581,10 @@ class FloatingButtonService : Service() {
     private fun verifyPendingSkip() {
         val pending = pendingSkip ?: return
         val generation = interactionGeneration.get()
+        if (!canContinueSkip(pending.automatic, generation)) {
+            pendingSkip = null
+            return
+        }
         val now = SystemClock.uptimeMillis()
         if (!ConfigManager.get(this).isAppEnabled(pending.target) ||
             ForegroundAppResolver.current(this) != pending.target) {
@@ -537,7 +598,7 @@ class FloatingButtonService : Service() {
             adGate.cancelCandidate()
             return
         }
-        if (!pollingStarted || interactionActive || generation != interactionGeneration.get()) {
+        if (!canContinueSkip(pending.automatic, generation)) {
             adGate.cancelCandidate()
             pending.clearSince = null
             return
@@ -557,7 +618,7 @@ class FloatingButtonService : Service() {
             if (observation.isAd && !pending.fallbackTried && now - pending.startedAt >= 2000L) {
                 pending.fallbackTried = true
                 SkipAdAccessibilityService.trySkipByClick(pending.target) {
-                    pollingStarted && !interactionActive && generation == interactionGeneration.get()
+                    canContinueSkip(pending.automatic, generation)
                 }
             }
         }
@@ -570,7 +631,7 @@ class FloatingButtonService : Service() {
     private fun tryAutoSkip(cause: String) {
         val generation = interactionGeneration.get()
         val target = ForegroundAppResolver.current(this)
-        if (!pollingStarted || interactionActive || generation != interactionGeneration.get()) {
+        if (!canContinueSkip(true, generation)) {
             adGate.cancelCandidate()
             return
         }
@@ -582,7 +643,7 @@ class FloatingButtonService : Service() {
         val start = SystemClock.uptimeMillis()
         val observation = SkipAdAccessibilityService.observeEvidence(target)
         val now = SystemClock.uptimeMillis()
-        if (!pollingStarted || interactionActive || generation != interactionGeneration.get()) {
+        if (!canContinueSkip(true, generation)) {
             adGate.cancelCandidate()
             return
         }
@@ -599,6 +660,10 @@ class FloatingButtonService : Service() {
         decision.recheckMs?.let { scheduleDetection(it, "confirm") }
         if (decision.send) submitSkip(true, target, observation)
     }
+
+    private fun canContinueSkip(automatic: Boolean, generation: Long): Boolean =
+        pollingStarted && !interactionActive && generation == interactionGeneration.get() &&
+            (!automatic || ConfigManager.get(this).autoSkip)
 
     /**
      * 进入收起状态：变成小长方形贴边显示（不再藏 2/3 + 变透明）
@@ -688,17 +753,11 @@ class FloatingButtonService : Service() {
     }
 
     /**
-     * 维持悬浮窗永久显示。
-     *
-     * 用户决定：悬浮窗一经启动即永久显示，不再随前台应用切换而隐藏。
-     * 本方法在每秒轮询中被调用，负责校验 View 的真实挂载状态，
-     * 若被系统意外移除则立即重建，保证悬浮窗始终可见。
+     * 按独立的显示意愿维护手动按钮；按钮关闭或权限撤回均不停止自动检测。
      */
     private fun checkShouldShow() {
-        if (!Settings.canDrawOverlays(this)) {
-            pollingStarted = false
-            handler.removeCallbacks(foregroundChecker)
-            stopSelf()
+        if (!ConfigManager.get(this).floatingEnabled || !Settings.canDrawOverlays(this)) {
+            removeFloatingButton()
             return
         }
         // 用户决定：悬浮窗启动后永久显示，不再随前台应用切换而隐藏。
@@ -709,8 +768,7 @@ class FloatingButtonService : Service() {
         if (!isAttached) {
             Log.d(TAG, "永久显示: View未挂载(引用=${floatingView != null})，执行重建")
             if (!showFloatingButton()) {
-                pollingStarted = false
-                stopSelf()
+                Log.w(TAG, "悬浮按钮不可用，自动识别继续运行")
                 return
             }
         }
@@ -718,7 +776,20 @@ class FloatingButtonService : Service() {
         if (floatingView?.visibility != View.VISIBLE) {
             floatingView?.visibility = View.VISIBLE
         }
-        isVisible = true
+    }
+
+    private fun removeFloatingButton() {
+        val button = floatingView ?: return
+        interactionGeneration.incrementAndGet()
+        interactionActive = false
+        button.removeCallbacks(dragPositionFrame)
+        dragFramePending = false
+        edgeHoldRunnable?.let(handler::removeCallbacks)
+        edgeHoldRunnable = null
+        if (button.isAttachedToWindow) runCatching { windowManager.removeView(button) }
+        floatingView = null
+        layoutParams = null
+        isStealth = false
     }
 
     override fun onDestroy() {

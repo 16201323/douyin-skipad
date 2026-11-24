@@ -38,6 +38,7 @@ class DragResponsivenessTest {
     @Before fun setup() {
         ConfigManager::class.java.getDeclaredField("instance").apply { isAccessible = true }.set(null, null)
         context.getSharedPreferences("skip_ad_config", Context.MODE_PRIVATE).edit().clear().commit()
+        ConfigManager.get(context).apply { floatingEnabled = true; autoSkip = false }
         ShadowSettings.setCanDrawOverlays(true)
         RootWindowShadow.onRead = null
         RootWindowShadow.root = AccessibilityNodeInfo.obtain().apply {

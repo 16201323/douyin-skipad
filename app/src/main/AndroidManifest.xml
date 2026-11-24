@@ -12,6 +12,7 @@
 
     <!-- 悬浮窗权限：显示悬浮按钮 -->
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <!-- 使用情况访问权限：用于检测当前前台应用，替代无障碍服务做前台判断。
          需用户在系统设置中手动授权「使用情况访问」，无法运行时动态申请。 -->
@@ -66,7 +67,7 @@
             <!-- Android 14 要求 specialUse 类型必须声明用途说明 -->
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
-                android:value="悬浮窗：在其他应用上层持续显示广告跳过按钮，供用户点击跳过" />
+                android:value="本地广告识别与跳过：持续监听目标播放器界面变化，提供通知暂停恢复和可选的悬浮手动按钮" />
         </service>
 
         <!-- 图片裁剪库的裁剪 Activity：悬浮窗图片模式选图后进入此界面自由框选裁剪 -->

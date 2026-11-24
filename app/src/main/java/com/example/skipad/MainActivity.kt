@@ -84,7 +84,7 @@ class MainActivity : AppCompatActivity() {
     private var waitingForUsageStatsPermission = false
     private var waitingForAccessibilityPermission = false
 
-    // 自动跳过复选框（成员变量，便于从设置返回后刷新状态）
+    // 独立的悬浮窗显示开关，从设置返回后同步授权与显示意愿。
     private var autoSkipCheckBox: CompoundButton? = null
     // 跳过统计展示（成员变量，便于 onResume 时刷新最新数字）
     private var statsView: TextView? = null
@@ -92,8 +92,7 @@ class MainActivity : AppCompatActivity() {
     private var permStatusView: TextView? = null
     // 自动跳过复选框的监听器（成员变量，便于刷新时重新设置）
     private var autoSkipListener: android.widget.CompoundButton.OnCheckedChangeListener? = null
-    // 标记：用户想开启自动跳过，但无障碍服务未开，等待用户开启后自动勾选
-    private var pendingAutoSkip = false
+    private val notificationPermissionLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
 
     // ===== 图片模式相关 =====
     // 选图 / 裁剪的 Activity Result 启动器（在 onCreate 注册）
@@ -124,6 +123,7 @@ class MainActivity : AppCompatActivity() {
         config = ConfigManager.get(this)
         AppCompatDelegate.setDefaultNightMode(config.themeMode)
         super.onCreate(savedInstanceState)
+        consumeNotificationAction(intent)
         ui = AppUi(this)
         selectedPage = savedInstanceState?.getInt("selected_page", 0) ?: 0
         draftButtonText = savedInstanceState?.getString("draft_button_text")
@@ -139,32 +139,33 @@ class MainActivity : AppCompatActivity() {
         buildUI()
     }
 
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        consumeNotificationAction(intent)
+        checkAndProceed()
+        refreshRuntimeUi()
+    }
+
+    private fun consumeNotificationAction(intent: Intent) {
+        if (intent.action == FloatingButtonService.ACTION_SHOW_FLOATING) {
+            config.floatingEnabled = true
+            intent.action = null
+        }
+    }
+
     override fun onResume() {
         super.onResume()
         // 从抖音自动跳过后返回本页，刷新统计数字（今日/本周可能已增加）
         refreshStatsView()
         // 从系统设置返回，刷新权限状态（否则无障碍已开却仍显示 ❌）
         refreshPermissionStatus()
-        // 首页展示缺少的权限；只有用户点击启动才进入授权引导。
-        if (config.floatingEnabled && isNotificationListenerEnabled() && canDrawOverlays() &&
-            (hasUsageStatsPermission() || SkipAdAccessibilityService.isRunning()) && !isFloatingServiceRunning()) {
-            startFloatingButton()
-        }
-        // 从无障碍设置返回后，如果用户之前想开启自动跳过且无障碍已开，自动勾选
-        if (pendingAutoSkip && isAccessibilityServiceEnabled()) {
-            pendingAutoSkip = false
-            config.autoSkip = true
-            autoSkipCheckBox?.let { cb ->
-                cb.setOnCheckedChangeListener(null)
-                cb.isChecked = true
-                cb.setOnCheckedChangeListener(autoSkipListener)
-            }
-            Toast.makeText(this, "无障碍服务已开启，自动跳过已启用", Toast.LENGTH_SHORT).show()
-        }
+        // 授权齐全时打开 App 即启动；主动暂停保留，不因返回首页重新打开。
+        checkAndProceed()
         // 刷新复选框状态
         autoSkipCheckBox?.let { cb ->
             cb.setOnCheckedChangeListener(null)
-            cb.isChecked = config.autoSkip
+            cb.isChecked = config.floatingEnabled
             cb.setOnCheckedChangeListener(autoSkipListener)
         }
         refreshRuntimeUi()
@@ -189,13 +190,11 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * 权限检测与流程推进（通知使用权 → 悬浮窗 → 使用情况访问）
-     * 注意：
-     * - 「使用情况访问」用于检测当前前台应用，决定悬浮窗在哪些界面显示，必须开启。
-     * - 无障碍服务不在这里强制引导，只有用户开启「自动跳过」时才检查。
+     * 按运行意愿引导授权：自动跳过需要通知使用权和无障碍；
+     * 显示手动按钮才需要悬浮窗权限，无障碍不可用时手动操作另需使用情况访问。
      */
     private fun checkAndProceed() {
-        if (!config.floatingEnabled) return
+        if (!config.autoSkip && !config.floatingEnabled) return
         when {
             !isNotificationListenerEnabled() -> {
                 if (!waitingForNotificationPermission) {
@@ -207,7 +206,17 @@ class MainActivity : AppCompatActivity() {
                     ) { openNotificationListenerSettings() }
                 }
             }
-            !canDrawOverlays() -> {
+            config.autoSkip && !isAccessibilityServiceEnabled() && !SkipAdAccessibilityService.isRunning() -> {
+                waitingForNotificationPermission = false
+                if (!waitingForAccessibilityPermission) {
+                    waitingForAccessibilityPermission = true
+                    showPermissionDialog("需要开启「无障碍服务」",
+                        "自动跳过需要读取目标应用中的广告提示，不需要显示悬浮按钮。", "去开启") { openAccessibilitySettings() }
+                }
+            }
+            config.floatingEnabled && !canDrawOverlays() -> {
+                // 悬浮按钮授权不阻塞已具备权限的自动跳过。
+                if (config.autoSkip) syncWorker()
                 waitingForNotificationPermission = false
                 if (!waitingForOverlayPermission) {
                     waitingForOverlayPermission = true
@@ -218,7 +227,7 @@ class MainActivity : AppCompatActivity() {
                     ) { openOverlaySettings() }
                 }
             }
-            !hasUsageStatsPermission() && !SkipAdAccessibilityService.isRunning() -> {
+            !config.autoSkip && !hasUsageStatsPermission() && !SkipAdAccessibilityService.isRunning() -> {
                 waitingForNotificationPermission = false
                 waitingForOverlayPermission = false
                 if (!waitingForUsageStatsPermission) {
@@ -234,10 +243,9 @@ class MainActivity : AppCompatActivity() {
                 waitingForNotificationPermission = false
                 waitingForOverlayPermission = false
                 waitingForUsageStatsPermission = false
+                waitingForAccessibilityPermission = false
                 // 仅恢复用户期望的运行状态，主动停止后不自动重启。
-                if (!isFloatingServiceRunning()) {
-                    startFloatingButton()
-                }
+                syncWorker()
             }
         }
     }
@@ -424,13 +432,14 @@ class MainActivity : AppCompatActivity() {
         hero.addView(top)
         hero.addView(ui.space(18))
         statusTitle = ui.label("准备好再出发", 23f, medium = true)
-        statusDetail = ui.label("开启悬浮窗，轻点按钮即可发送跳过请求。", 13f, ui.secondary)
+        statusDetail = ui.label("自动识别广告，无需显示悬浮按钮。", 13f, ui.secondary)
         hero.addView(statusTitle)
         hero.addView(ui.space(9))
         hero.addView(statusDetail)
         hero.addView(ui.space(20))
-        serviceToggle = ui.button("开启悬浮窗", true) {
-            if (isFloatingServiceRunning()) stopFloatingButton() else startFloatingButton()
+        serviceToggle = ui.button("恢复自动跳过", true) {
+            config.autoSkip = !config.autoSkip
+            if (config.autoSkip) checkAndProceed() else syncWorker()
             refreshRuntimeUi()
             uiHandler.postDelayed({ refreshRuntimeUi() }, 300L)
         }.apply { tag = "service_toggle" }
@@ -464,31 +473,20 @@ class MainActivity : AppCompatActivity() {
         val automatic = ui.card()
         val row = ui.row()
         val words = ui.column()
-        words.addView(ui.label("自动跳过", 16f, medium = true))
+        words.addView(ui.label("显示悬浮窗", 16f, medium = true))
         words.addView(ui.space(5))
-        words.addView(ui.label("识别到短剧广告后自动发送跳过请求", 12f, ui.secondary))
+        words.addView(ui.label("可选的手动按钮，关闭不影响自动跳过", 12f, ui.secondary))
         row.addView(words, LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = ui.dp(12) })
         val toggle = SwitchCompat(this).apply {
-            isChecked = config.autoSkip
-            contentDescription = "自动跳过"
+            isChecked = config.floatingEnabled
+            contentDescription = "显示悬浮窗"
+            tag = "floating_toggle"
             minimumHeight = ui.dp(48)
             buttonTintList = ColorStateList.valueOf(ui.accent)
         }
         autoSkipCheckBox = toggle
         autoSkipListener = CompoundButton.OnCheckedChangeListener { _, checked ->
-            if (checked && !isAccessibilityServiceEnabled()) {
-                config.autoSkip = false
-                pendingAutoSkip = true
-                toggle.setOnCheckedChangeListener(null)
-                toggle.isChecked = false
-                toggle.setOnCheckedChangeListener(autoSkipListener)
-                showPermissionDialog("开启自动跳过", "请先在系统设置中开启本应用的无障碍服务，用于识别广告界面。", "去设置") {
-                    openAccessibilitySettings()
-                }
-            } else {
-                pendingAutoSkip = false
-                config.autoSkip = checked
-            }
+            if (checked) startFloatingButton() else stopFloatingButton()
             refreshRuntimeUi()
         }
         toggle.setOnCheckedChangeListener(autoSkipListener)
@@ -504,7 +502,7 @@ class MainActivity : AppCompatActivity() {
         readinessText = ui.label("", 12f, ui.secondary)
         readiness.addView(ui.space(9)); readiness.addView(readinessText)
         parent.addView(readiness)
-        parent.addView(ui.label("轻点跳过 · 长按收起 · 拖动调整位置", 12f, ui.secondary).apply { gravity = Gravity.CENTER })
+        parent.addView(ui.label("自动跳过可独立运行；悬浮按钮可轻点、长按和拖动。", 12f, ui.secondary).apply { gravity = Gravity.CENTER })
         parent.addView(ui.space(10))
     }
 
@@ -661,29 +659,28 @@ class MainActivity : AppCompatActivity() {
     private fun refreshRuntimeUi() {
         if (!::ui.isInitialized) return
         val running = isFloatingServiceRunning()
-        val basicReady = isNotificationListenerEnabled() && canDrawOverlays() &&
-            (hasUsageStatsPermission() || SkipAdAccessibilityService.isRunning())
-        statusBadge?.text = if (running) "●  运行中" else "○  已停止"
-        statusBadge?.setTextColor(if (running) ui.accent else ui.secondary)
+        val basicReady = isNotificationListenerEnabled() && SkipAdAccessibilityService.isRunning()
+        val automaticRunning = running && config.autoSkip && basicReady
+        statusBadge?.text = if (automaticRunning) "●  运行中" else if (!config.autoSkip) "○  已暂停" else "○  待就绪"
+        statusBadge?.setTextColor(if (automaticRunning) ui.accent else ui.secondary)
         statusTitle?.text = when {
-            running -> "悬浮窗已开启"
-            !basicReady -> "还有一步，准备就绪"
-            else -> "准备好再出发"
+            !config.autoSkip -> "自动跳过已暂停"
+            automaticRunning -> "自动跳过运行中"
+            else -> "等待权限与服务就绪"
         }
         statusDetail?.text = when {
-            !basicReady -> "前往权限设置，完成授权后即可使用。"
-            running && config.autoSkip && !SkipAdAccessibilityService.isRunning() -> "无障碍尚未连接，当前可手动发送跳过请求。"
-            running && config.autoSkip -> "自动跳过已开启，也可以随时轻点按钮。"
-            running -> "遇到广告，轻点悬浮按钮发送跳过请求。"
-            else -> "开启悬浮窗，把更多时间留给故事。"
+            !config.autoSkip -> "恢复后继续识别广告；关闭界面也会记住暂停状态。"
+            !basicReady -> "完成通知使用权和无障碍授权后，即可自动识别广告。"
+            automaticRunning -> "无需悬浮按钮，进入已选择的应用即可使用。"
+            else -> "后台服务尚未运行，请重试或检查系统后台限制。"
         }
-        serviceToggle?.text = if (running) "停止悬浮窗" else if (basicReady) "开启悬浮窗" else "检查权限并开启"
+        serviceToggle?.text = if (config.autoSkip) "暂停自动跳过" else "恢复自动跳过"
         todayCountView?.text = config.getTodaySkipCount().toString()
         weekCountView?.text = config.getWeekSkipCount().toString()
         readinessText?.text = when {
-            !basicReady -> "基础权限尚未完成，点右侧按钮查看。"
-            config.autoSkip && !SkipAdAccessibilityService.isRunning() -> "基础权限已就绪，无障碍服务仍需连接。"
-            else -> "基础权限已就绪，按你的喜好选择手动或自动。"
+            !basicReady -> "自动跳过需要通知使用权与已连接的无障碍服务。"
+            config.floatingEnabled && !canDrawOverlays() -> "自动跳过已就绪；手动按钮还需要悬浮窗权限。"
+            else -> "自动跳过已就绪，无需授予悬浮窗权限。"
         }
         permissionRefreshers.forEach { it() }
     }
@@ -1060,7 +1057,7 @@ class MainActivity : AppCompatActivity() {
                 waitingForNotificationPermission = false
                 waitingForOverlayPermission = false
                 waitingForUsageStatsPermission = false
-                pendingAutoSkip = false
+                waitingForAccessibilityPermission = false
             }
             .show()
     }
@@ -1099,25 +1096,33 @@ class MainActivity : AppCompatActivity() {
 
     private fun startFloatingButton() {
         config.floatingEnabled = true
-        if (!isNotificationListenerEnabled() || !canDrawOverlays() ||
-            (!hasUsageStatsPermission() && !SkipAdAccessibilityService.isRunning())) {
-            checkAndProceed()
-            return
-        }
+        checkAndProceed()
+    }
+
+    private fun syncWorker() {
+        if (!isNotificationListenerEnabled()) return
+        if (!config.autoSkip && !config.floatingEnabled && !isFloatingServiceRunning()) return
         val intent = Intent(this, FloatingButtonService::class.java).apply {
-            action = FloatingButtonService.ACTION_START
+            action = FloatingButtonService.ACTION_REFRESH
         }
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(intent) else startService(intent)
+            if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) !=
+                android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                val prefs = getSharedPreferences("skip_ad_config", Context.MODE_PRIVATE)
+                if (!prefs.getBoolean("notification_prompted", false)) {
+                    prefs.edit().putBoolean("notification_prompted", true).apply()
+                    notificationPermissionLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+                }
+            }
         } catch (e: Exception) {
-            Toast.makeText(this, "无法启动悬浮窗：${e.message}", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, "无法启动跳过服务：${e.message}", Toast.LENGTH_LONG).show()
         }
     }
 
     private fun stopFloatingButton() {
         config.floatingEnabled = false
-        stopService(Intent(this, FloatingButtonService::class.java))
-        Toast.makeText(this, "悬浮按钮已停止", Toast.LENGTH_SHORT).show()
+        syncWorker()
     }
 
     private fun refreshFloatingButton() {

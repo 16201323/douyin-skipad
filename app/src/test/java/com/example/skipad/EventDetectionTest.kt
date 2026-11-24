@@ -277,4 +277,20 @@ class EventDetectionTest {
         assertEquals(1, CountingTransportShadow.count)
         service.destroy()
     }
+
+    @Test fun pausingWhileWindowReadReturnsCannotSendStaleSkip() {
+        val service = startAutomaticService()
+        RootWindowShadow.root = player("5秒后可继续看下一集")
+        contentEvent()
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(100))
+        RootWindowShadow.onRead = {
+            RootWindowShadow.onRead = null
+            service.get().onStartCommand(Intent(context, FloatingButtonService::class.java)
+                .setAction(FloatingButtonService.ACTION_PAUSE_AUTO), 0, 2)
+        }
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(500))
+        assertFalse(ConfigManager.get(context).autoSkip)
+        assertEquals(0, CountingTransportShadow.count)
+        service.destroy()
+    }
 }

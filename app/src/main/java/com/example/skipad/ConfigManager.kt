@@ -113,13 +113,13 @@ class ConfigManager private constructor(context: Context) {
 
     // ===== 自动跳过开关 =====
     var autoSkip: Boolean
-        get() = prefs.getBoolean(KEY_AUTO_SKIP, false)
+        get() = prefs.getBoolean(KEY_AUTO_SKIP, true)
         set(value) = prefs.edit().putBoolean(KEY_AUTO_SKIP, value).apply()
 
-    // 主动停止后不因 Activity.onResume 或系统重建再次启动。
+    // 独立的手动按钮显示意愿；旧版 floating_enabled 表示整个服务，不沿用为显示意愿。
     var floatingEnabled: Boolean
-        get() = prefs.getBoolean("floating_enabled", true)
-        set(value) = prefs.edit().putBoolean("floating_enabled", value).apply()
+        get() = prefs.getBoolean("show_floating_button", false)
+        set(value) = prefs.edit().putBoolean("show_floating_button", value).apply()
 
     val hasSavedPosition: Boolean
         get() = prefs.contains(KEY_BUTTON_X) && prefs.contains(KEY_BUTTON_Y)
