@@ -1,12 +1,13 @@
 [CmdletBinding()]
 param(
     [string]$ApkPath = 'app/build/outputs/apk/release/douyin-skipad-release.apk',
-    [string]$NotesPath = 'docs/releases/v1.5.0.md',
+    [string]$NotesPath = '',
     [string]$OutputDirectory = 'build/update-site',
     [string]$AndroidSdk = $env:ANDROID_HOME
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+. "$PSScriptRoot/Get-ApkSignerDigests.ps1"
 $workspaceRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 function WorkspacePath([string]$path) {
     $resolved = [IO.Path]::GetFullPath((Join-Path $workspaceRoot $path))
@@ -17,7 +18,6 @@ function WorkspacePath([string]$path) {
 }
 $apk = WorkspacePath $ApkPath
 $output = WorkspacePath $OutputDirectory
-$notes = Get-Content -LiteralPath (WorkspacePath $NotesPath) -Raw -Encoding UTF8
 if (-not $AndroidSdk) {
     $sdkLine = Get-Content -LiteralPath (Join-Path $workspaceRoot 'local.properties') | Where-Object { $_ -match '^sdk\.dir=' } | Select-Object -First 1
     if (-not $sdkLine) { throw 'Set ANDROID_HOME or pass -AndroidSdk.' }
@@ -32,7 +32,8 @@ if ($LASTEXITCODE -ne 0) { throw 'APK signature verification failed.' }
 $expectedSignerFile = Join-Path $workspaceRoot '.github/release-signing-sha256.txt'
 if (Test-Path -LiteralPath $expectedSignerFile) {
     $expectedSigner = (Get-Content -LiteralPath $expectedSignerFile -Raw).Trim().ToLowerInvariant()
-    $actualSigner = [regex]::Match($signatureOutput, 'Signer #1 certificate SHA-256 digest: ([0-9a-fA-F]{64})').Groups[1].Value.ToLowerInvariant()
+    $actualSigners = @(Get-ApkSignerDigests $signatureOutput)
+    $actualSigner = $actualSigners -join ','
     if ($actualSigner -ne $expectedSigner) {
         $digestLines = ([regex]::Matches($signatureOutput, '(?im)^.*SHA-256.*$') | ForEach-Object { $_.Value }) -join '; '
         throw "APK signer mismatch. Expected certificate: $expectedSigner; parsed certificate: $actualSigner; public digest output: $digestLines"
@@ -46,6 +47,8 @@ $nameMatch = [regex]::Match($badging, 'android:versionName\([^)]*\)="([^"]+)"')
 if (-not $package.Success -or $package.Groups[1].Value -ne 'com.example.skipad' -or -not $codeMatch.Success -or -not $nameMatch.Success) { throw 'Unexpected APK metadata.' }
 $version = $nameMatch.Groups[1].Value
 if ($version -notmatch '^\d{1,6}\.\d{1,6}\.\d{1,6}$') { throw 'Expected a stable three-part version.' }
+if (-not $NotesPath) { $NotesPath = "docs/releases/v$version.md" }
+$notes = Get-Content -LiteralPath (WorkspacePath $NotesPath) -Raw -Encoding UTF8
 $bytes = (Get-Item -LiteralPath $apk).Length
 if ($bytes -gt 25MB) { throw 'APK exceeds the Cloudflare Pages 25 MiB limit.' }
 $hash = (Get-FileHash -LiteralPath $apk -Algorithm SHA256).Hash.ToLowerInvariant()

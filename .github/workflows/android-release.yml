@@ -49,6 +49,9 @@ jobs:
           "$sdkmanager_path" 'platforms;android-34' 'build-tools;34.0.0'
       - name: Test, lint and build signed APK
         run: gradle --no-daemon :app:testDebugUnitTest :app:lintDebug :app:assembleRelease
+      - name: Check release tooling compatibility
+        shell: pwsh
+        run: ./scripts/Test-ReleaseTools.ps1
       - name: Resolve immutable release package
         id: release
         shell: pwsh
