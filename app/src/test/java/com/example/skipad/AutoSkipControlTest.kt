@@ -102,4 +102,50 @@ class AutoSkipControlTest {
         assertNull(shadowOf(RuntimeEnvironment.getApplication()).nextStartedService)
         activity.destroy()
     }
+    @Test fun controlsShareOneCardAndSettingsOpenPermissionDetails() {
+        val activity = Robolectric.buildActivity(MainActivity::class.java).create()
+        val root = activity.get().window.decorView
+        val automatic = root.findViewWithTag<View>("auto_skip_toggle")
+        val floating = root.findViewWithTag<View>("floating_toggle")
+        assertSame(automatic.parent.parent, floating.parent.parent)
+        root.findViewWithTag<View>("nav_settings").performClick()
+        assertNull(root.findViewWithTag<View>("permission_notification"))
+        assertNull(root.findViewWithTag<View>("open_releases"))
+        root.findViewWithTag<View>("permissions_details").performClick()
+        assertNotNull(root.findViewWithTag<View>("permission_notification"))
+        activity.destroy()
+    }
+    @Test fun freshInstallDefaultsAreReadyForIndependentAutomaticSkipping() {
+        val config = ConfigManager.get(context)
+        assertTrue(config.autoSkip)
+        assertFalse(config.floatingEnabled)
+        assertEquals(-1, config.themeMode)
+    }
+    @Test @org.robolectric.annotation.GraphicsMode(org.robolectric.annotation.GraphicsMode.Mode.NATIVE)
+    @Config(qualifiers = "w360dp-h800dp-xxhdpi")
+    fun renderConsolidatedPagesForReview() {
+        val folder = java.io.File("../build/ui-1.5.3").apply { mkdirs() }
+        for (mode in listOf(1, 2)) {
+            ConfigManager.get(context).themeMode = mode
+            val controller = Robolectric.buildActivity(MainActivity::class.java).create()
+            val activity = controller.get()
+            fun capture(name: String) {
+                val view = activity.window.decorView
+                view.measure(View.MeasureSpec.makeMeasureSpec(1080, View.MeasureSpec.EXACTLY), View.MeasureSpec.makeMeasureSpec(2400, View.MeasureSpec.EXACTLY))
+                view.layout(0, 0, 1080, 2400)
+                val bitmap = android.graphics.Bitmap.createBitmap(1080, 2400, android.graphics.Bitmap.Config.ARGB_8888)
+                view.draw(android.graphics.Canvas(bitmap))
+                java.io.File(folder, "$mode-$name.png").outputStream().use { bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it) }
+                bitmap.recycle()
+            }
+            capture("home")
+            activity.window.decorView.findViewWithTag<View>("nav_settings").performClick()
+            capture("settings")
+            activity.window.decorView.findViewWithTag<View>("permissions_details").performClick()
+            capture("permissions")
+            activity.onBackPressed()
+            assertNotNull(activity.window.decorView.findViewWithTag<View>("permissions_details"))
+            controller.destroy()
+        }
+    }
 }

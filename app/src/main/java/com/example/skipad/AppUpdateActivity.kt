@@ -1,5 +1,6 @@
 package com.example.skipad
 
+import android.content.Context
 import android.content.Intent
 import android.content.ClipData
 import android.content.pm.PackageManager
@@ -136,10 +137,28 @@ internal class AppUpdateActivity : SettingsPageActivity() {
         notes = ui.label("检查后显示版本说明。", 13f, ui.secondary).apply { setTextIsSelectable(true) }
         changes.addView(notes)
         changes.addView(ui.space(16))
-        changes.addView(ui.button("历史版本与下载") {
-            try { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(UpdateRelease.RELEASES_URL))) }
-            catch (_: android.content.ActivityNotFoundException) { Toast.makeText(this, "未找到浏览器", Toast.LENGTH_SHORT).show() }
-        }, LinearLayout.LayoutParams(-1, -2))
+        changes.addView(ui.label("历史版本与下载", 15f, medium = true))
+        changes.addView(ui.space(6))
+        changes.addView(ui.label("打开 GitHub Release 列表，自行选择版本并下载 APK。", 12f, ui.secondary))
+        changes.addView(ui.space(10))
+        val releasesUrl = UpdateRelease.RELEASES_URL
+        changes.addView(ui.label(releasesUrl, 12f, ui.accent).apply {
+            tag = "release_list_url"; setTextIsSelectable(true)
+        })
+        changes.addView(ui.space(12))
+        val downloads = ui.row()
+        downloads.addView(ui.button("打开历史版本") {
+            try { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(releasesUrl))) }
+            catch (_: android.content.ActivityNotFoundException) {
+                Toast.makeText(this, "未找到浏览器，请复制地址后打开", Toast.LENGTH_SHORT).show()
+            }
+        }.apply { tag = "open_releases" }, LinearLayout.LayoutParams(0, -2, 1f))
+        downloads.addView(ui.button("复制地址") {
+            (getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager)
+                .setPrimaryClip(android.content.ClipData.newPlainText("历史版本与下载", releasesUrl))
+            Toast.makeText(this, "已复制历史版本地址", Toast.LENGTH_SHORT).show()
+        }.apply { tag = "copy_releases" }, LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = ui.dp(8) })
+        changes.addView(downloads)
         body.addView(changes)
     }
 

@@ -354,7 +354,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showPage(index: Int) {
-        selectedPage = index.coerceIn(0, 2)
+        selectedPage = index.coerceIn(0, 3)
         floatingToggle = null
         floatingPreview = null
         imagePreview = null
@@ -368,7 +368,8 @@ class MainActivity : AppCompatActivity() {
         when (selectedPage) {
             0 -> buildHome(content)
             1 -> buildAppearance(content)
-            else -> buildSettings(content)
+            2 -> buildSettings(content)
+            else -> buildPermissionDetails(content)
         }
         scroll.addView(content)
         pageHost.addView(scroll, FrameLayout.LayoutParams(-1, -1))
@@ -457,9 +458,8 @@ class MainActivity : AppCompatActivity() {
         }
         automaticToggle!!.setOnCheckedChangeListener(automaticToggleListener)
         automaticRow.addView(automaticToggle)
-        hero.addView(automaticRow)
         hero.addView(ui.space(14))
-        hero.addView(ui.button("检查权限") { showPage(2) }.apply { tag = "check_permissions" }, LinearLayout.LayoutParams(-1, -2))
+        hero.addView(ui.button("检查权限") { showPage(3) }.apply { tag = "check_permissions" }, LinearLayout.LayoutParams(-1, -2))
         parent.addView(hero)
 
         val stats = ui.card()
@@ -484,12 +484,13 @@ class MainActivity : AppCompatActivity() {
             LinearLayout.LayoutParams(ui.dp(1), ui.dp(48)).apply { marginEnd = ui.dp(24) })
         values.addView(week.first, LinearLayout.LayoutParams(0, -2, 1f))
         stats.addView(values)
-        parent.addView(stats)
 
         val automatic = ui.card()
+        automatic.addView(automaticRow)
+        automatic.addView(ui.divider())
         val row = ui.row()
         val words = ui.column()
-        words.addView(ui.label("显示悬浮窗", 16f, medium = true))
+        words.addView(ui.label("显示悬浮窗", 17f, medium = true))
         words.addView(ui.space(5))
         words.addView(ui.label("可选的手动按钮，关闭不影响自动跳过", 12f, ui.secondary))
         row.addView(words, LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = ui.dp(12) })
@@ -509,11 +510,11 @@ class MainActivity : AppCompatActivity() {
         row.addView(toggle)
         automatic.addView(row)
         parent.addView(automatic)
+        parent.addView(stats)
 
         val readiness = ui.card()
         val readinessHeader = ui.row()
         readinessHeader.addView(ui.label("运行准备", 14f, medium = true), LinearLayout.LayoutParams(0, -2, 1f))
-        readinessHeader.addView(ui.button("查看权限") { showPage(2) })
         readiness.addView(readinessHeader)
         readinessText = ui.label("", 12f, ui.secondary)
         readiness.addView(ui.space(9)); readiness.addView(readinessText)
@@ -616,6 +617,43 @@ class MainActivity : AppCompatActivity() {
         parent.addView(recognition)
 
         val permissions = ui.card()
+        val permissionSummary = ui.label("", 12f, ui.secondary)
+        permissions.addView(permissionSummary)
+        permissionRefreshers.add {
+            permissionSummary.text = if (!isNotificationListenerEnabled()) "待开启通知使用权"
+                else if (!isAccessibilityServiceEnabled()) "待开启无障碍服务"
+                else if (!SkipAdAccessibilityService.isRunning()) "已授权 · 等待服务连接"
+                else "必需授权已就绪 · 无障碍已连接"
+        }
+        permissions.addView(ui.button("权限与连接 ›") { showPage(3) }.apply { tag = "permissions_details" }, LinearLayout.LayoutParams(-1, -2))
+        parent.addView(permissions)
+
+        val detection = ui.card()
+        cardTitle(detection, "补充检测", "页面变化时优先检测，此间隔用于补漏。")
+        addSlider(detection, "检查间隔", config.detectIntervalMs, 200, 2000, { "${it} ms" }) { config.detectIntervalMs = it }
+        detection.addView(ui.label("间隔越小，补漏越及时，也会增加耗电。", 12f, ui.secondary))
+        parent.addView(detection)
+
+        val about = ui.card()
+        cardTitle(about, "关于")
+        val version = packageManager.getPackageInfo(packageName, 0).versionName ?: ""
+        about.addView(ui.label("抖音跳广告助手  ·  $version", 12f, ui.secondary))
+        about.addView(ui.space(12))
+        about.addView(ui.button("软件更新", true) { startActivity(Intent(this, AppUpdateActivity::class.java)) }
+            .apply { tag = "app_update" }, LinearLayout.LayoutParams(-1, -2))
+        about.addView(ui.space(8))
+        about.addView(ui.label("识别存在覆盖限制，未自动跳过时可手动点击悬浮窗。", 12f, ui.secondary))
+        parent.addView(about)
+    }
+
+    @Deprecated("Deprecated in Java")
+    override fun onBackPressed() {
+        if (selectedPage == 3) showPage(2) else super.onBackPressed()
+    }
+
+    private fun buildPermissionDetails(parent: LinearLayout) {
+        parent.addView(ui.button("返回设置") { showPage(2) }.apply { tag = "permissions_back" })
+        val permissions = ui.card()
         cardTitle(permissions, "权限与连接", "系统授权与服务连接状态分开展示。")
         permissionRow(permissions, "通知使用权", "自动跳过必需 · 获取播放器控制会话", "notification",
             { isNotificationListenerEnabled() }, { openNotificationListenerSettings() })
@@ -635,45 +673,6 @@ class MainActivity : AppCompatActivity() {
         }
         parent.addView(permissions)
 
-        val detection = ui.card()
-        cardTitle(detection, "补充检测", "页面变化时优先检测，此间隔用于补漏。")
-        addSlider(detection, "检查间隔", config.detectIntervalMs, 200, 2000, { "${it} ms" }) { config.detectIntervalMs = it }
-        detection.addView(ui.label("间隔越小，补漏越及时，也会增加耗电。", 12f, ui.secondary))
-        parent.addView(detection)
-
-        val about = ui.card()
-        cardTitle(about, "关于")
-        val version = packageManager.getPackageInfo(packageName, 0).versionName ?: ""
-        about.addView(ui.label("抖音跳广告助手  ·  $version", 12f, ui.secondary))
-        about.addView(ui.space(12))
-        about.addView(ui.button("软件更新", true) { startActivity(Intent(this, AppUpdateActivity::class.java)) }
-            .apply { tag = "app_update" }, LinearLayout.LayoutParams(-1, -2))
-        about.addView(ui.space(8))
-        about.addView(ui.label("识别存在覆盖限制，未自动跳过时可手动点击悬浮窗。", 12f, ui.secondary))
-        about.addView(ui.space(18)); about.addView(ui.divider()); about.addView(ui.space(16))
-        about.addView(ui.label("历史版本与下载", 15f, medium = true))
-        about.addView(ui.space(6))
-        about.addView(ui.label("打开 GitHub Release 列表，自行选择版本并下载 APK。", 12f, ui.secondary))
-        about.addView(ui.space(10))
-        val releasesUrl = UpdateRelease.RELEASES_URL
-        about.addView(ui.label(releasesUrl, 12f, ui.accent).apply {
-            tag = "release_list_url"; setTextIsSelectable(true)
-        })
-        about.addView(ui.space(12))
-        val downloads = ui.row()
-        downloads.addView(ui.button("打开历史版本") {
-            try { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(releasesUrl))) }
-            catch (_: android.content.ActivityNotFoundException) {
-                Toast.makeText(this, "未找到浏览器，请复制地址后打开", Toast.LENGTH_SHORT).show()
-            }
-        }.apply { tag = "open_releases" }, LinearLayout.LayoutParams(0, -2, 1f))
-        downloads.addView(ui.button("复制地址") {
-            (getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager)
-                .setPrimaryClip(android.content.ClipData.newPlainText("历史版本与下载", releasesUrl))
-            Toast.makeText(this, "已复制历史版本地址", Toast.LENGTH_SHORT).show()
-        }.apply { tag = "copy_releases" }, LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = ui.dp(8) })
-        about.addView(downloads)
-        parent.addView(about)
     }
 
     private fun permissionRow(parent: LinearLayout, title: String, description: String, key: String,

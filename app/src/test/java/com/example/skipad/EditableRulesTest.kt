@@ -68,14 +68,9 @@ class EditableRulesTest {
         root.findViewWithTag<View>("nav_settings").performClick()
         assertNotNull("规则管理入口", root.findViewWithTag<View>("manage_rules"))
         assertNotNull("识别记录入口", root.findViewWithTag<View>("recognition_history"))
-        val link = root.findViewWithTag<TextView>("release_list_url")
-        assertNotNull("应展示历史版本列表地址", link)
-        assertEquals("https://github.com/16201323/douyin-skipad/releases", link.text.toString())
-        root.findViewWithTag<View>("copy_releases").performClick()
-        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-        assertEquals(link.text.toString(), clipboard.primaryClip!!.getItemAt(0).text.toString())
-        root.findViewWithTag<View>("open_releases").performClick()
-        assertEquals(link.text.toString(), shadowOf(controller.get()).nextStartedActivity.dataString)
+        assertNull(root.findViewWithTag<View>("open_releases"))
+        root.findViewWithTag<View>("app_update").performClick()
+        assertEquals(AppUpdateActivity::class.java.name, shadowOf(controller.get()).nextStartedActivity.component!!.className)
         controller.destroy()
     }
 

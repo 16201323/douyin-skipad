@@ -32,7 +32,10 @@ class AppUpdateTest {
         val root = controller.get().window.decorView
         root.findViewWithTag<View>("nav_settings").performClick()
         assertNotNull("应提供软件更新入口", root.findViewWithTag<View>("app_update"))
-        assertNotNull(root.findViewWithTag<View>("open_releases"))
+        assertNull(root.findViewWithTag<View>("open_releases"))
+        val updates = Robolectric.buildActivity(AppUpdateActivity::class.java).create()
+        assertNotNull(updates.get().window.decorView.findViewWithTag<View>("open_releases"))
+        updates.destroy()
         root.findViewWithTag<View>("app_update").performClick()
         assertEquals("com.example.skipad.AppUpdateActivity", shadowOf(controller.get()).nextStartedActivity.component!!.className)
         controller.destroy()

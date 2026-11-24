@@ -87,7 +87,7 @@ class UiRedesignTest {
         appearance.performClick()
         assertNotNull(root.findViewWithTag<View>("floating_preview"))
         root.findViewWithTag<View>("nav_settings").performClick()
-        assertNotNull(root.findViewWithTag<View>("permission_accessibility"))
+        assertNotNull(root.findViewWithTag<View>("permissions_details"))
         root.findViewWithTag<View>("nav_home").performClick()
         assertNotNull(root.findViewWithTag<View>("service_toggle"))
         assertEquals(84, config.buttonSize)
