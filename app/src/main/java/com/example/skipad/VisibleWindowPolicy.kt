@@ -1,34 +1,31 @@
 package com.example.skipad
 
 import android.graphics.Rect
+import android.graphics.Region
+import android.graphics.RegionIterator
 
 /** 只比较当前窗口快照；不使用上次前台包名，也不根据媒体会话猜测可见性。 */
 internal data class AppWindowFrame(val id: Int, val layer: Int, val order: Int, val bounds: Rect,
-    val eligible: Boolean, val focused: Boolean, val active: Boolean)
+    val eligible: Boolean, val focused: Boolean, val active: Boolean, val region: Region? = null)
 
 internal object VisibleWindowPolicy {
     private fun above(other: AppWindowFrame, target: AppWindowFrame): Boolean =
         other.layer > target.layer || (other.layer == target.layer && other.order < target.order)
 
-    private fun clipped(bounds: Rect, viewport: Rect): Rect? = Rect(bounds).takeIf { it.intersect(viewport) && !it.isEmpty }
-
-    private fun subtract(piece: Rect, cover: Rect): List<Rect> {
-        val overlap = Rect(piece)
-        if (!overlap.intersect(cover)) return listOf(piece)
-        return listOf(Rect(piece.left, piece.top, piece.right, overlap.top),
-            Rect(piece.left, overlap.bottom, piece.right, piece.bottom),
-            Rect(piece.left, overlap.top, overlap.left, overlap.bottom),
-            Rect(overlap.right, overlap.top, piece.right, overlap.bottom)).filterNot { it.isEmpty }
-    }
+    private fun shape(window: AppWindowFrame): Region =
+        (window.region?.let(::Region) ?: Region(window.bounds)).apply { op(window.bounds, Region.Op.INTERSECT) }
 
     fun exposedArea(target: AppWindowFrame, windows: List<AppWindowFrame>, viewport: Rect): Long {
-        var pieces = listOf(clipped(target.bounds, viewport) ?: return 0)
+        val exposed = shape(target).apply { op(viewport, Region.Op.INTERSECT) }
         for (cover in windows.filter { above(it, target) }) {
-            val rect = clipped(cover.bounds, viewport) ?: continue
-            pieces = pieces.flatMap { subtract(it, rect) }
-            if (pieces.isEmpty()) return 0
+            exposed.op(shape(cover), Region.Op.DIFFERENCE)
+            if (exposed.isEmpty) return 0
         }
-        return pieces.sumOf { it.width().toLong() * it.height() }
+        val iterator = RegionIterator(exposed)
+        val piece = Rect()
+        var area = 0L
+        while (iterator.next(piece)) area += piece.width().toLong() * piece.height()
+        return area
     }
 
     fun select(windows: List<AppWindowFrame>, viewport: Rect): AppWindowFrame? = windows.filter { it.eligible }
@@ -39,7 +36,7 @@ internal object VisibleWindowPolicy {
 
     fun canClick(target: AppWindowFrame, bounds: Rect, windows: List<AppWindowFrame>, viewport: Rect): Boolean {
         if (bounds.isEmpty || !viewport.contains(bounds.centerX(), bounds.centerY()) ||
-            !target.bounds.contains(bounds.centerX(), bounds.centerY())) return false
-        return windows.none { above(it, target) && it.bounds.contains(bounds.centerX(), bounds.centerY()) }
+            !shape(target).contains(bounds.centerX(), bounds.centerY())) return false
+        return windows.none { above(it, target) && shape(it).contains(bounds.centerX(), bounds.centerY()) }
     }
 }

@@ -6,6 +6,8 @@ import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import android.view.accessibility.AccessibilityWindowInfo
 import android.graphics.Rect
+import android.graphics.Region
+import android.os.Build
 
 /**
  * 无障碍服务
@@ -181,10 +183,13 @@ class SkipAdAccessibilityService : AccessibilityService() {
             val roots = mutableMapOf<Int, AccessibilityNodeInfo>()
             val frames = current.mapIndexed { order, window ->
                 val bounds = Rect().also(window::getBoundsInScreen)
+                // ColorOS 小窗装饰层可能只有边框可触摸，外接矩形却覆盖整个播放器。
+                // API 30+ 使用系统区域保留透明中心；旧系统继续采用保守的矩形判断。
+                val region = if (Build.VERSION.SDK_INT >= 30) Region().also(window::getRegionInScreen) else null
                 val root = if (window.type == AccessibilityWindowInfo.TYPE_APPLICATION) runCatching { window.root }.getOrNull() else null
                 val eligible = root?.isVisibleToUser == true && config.isAppEnabled(root.packageName?.toString().orEmpty())
                 if (eligible) roots[window.id] = requireNotNull(root)
-                AppWindowFrame(window.id, window.layer, order, bounds, eligible, window.isFocused, window.isActive)
+                AppWindowFrame(window.id, window.layer, order, bounds, eligible, window.isFocused, window.isActive, region)
             }
             val selected = VisibleWindowPolicy.select(frames, viewport) ?: return null
             val root = roots[selected.id] ?: return null

@@ -3,6 +3,7 @@ package com.example.skipad
 import android.accessibilityservice.AccessibilityService
 import android.content.Context
 import android.graphics.Rect
+import android.graphics.Region
 import android.os.PowerManager
 import android.app.KeyguardManager
 import android.view.accessibility.AccessibilityNodeInfo
@@ -17,9 +18,12 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
+import org.robolectric.annotation.GraphicsMode
+import org.robolectric.util.ReflectionHelpers
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [28], shadows = [RootWindowShadow::class, QueryNodeShadow::class])
+@GraphicsMode(GraphicsMode.Mode.NATIVE)
 class MultiWindowDetectionTest {
     private val context: Context get() = RuntimeEnvironment.getApplication()
     private val target = "com.ss.android.ugc.aweme"
@@ -185,5 +189,47 @@ class MultiWindowDetectionTest {
         RootWindowShadow.root = replacement; RootWindowShadow.windowList = listOf(window(11, replacement, screen, 2, true))
         assertFalse(SkipAdAccessibilityService.matchesVisibleWindow(target, 10))
         assertTrue(SkipAdAccessibilityService.matchesVisibleWindow(target, 11))
+    }
+
+    private fun region(info: AccessibilityWindowInfo, value: Region): AccessibilityWindowInfo = info.also {
+        ReflectionHelpers.callInstanceMethod<Void>(it, "setRegionInScreen",
+            ReflectionHelpers.ClassParameter.from(Region::class.java, value))
+    }
+
+    @Test @Config(sdk = [35]) fun transparentSystemDecorationDoesNotHideAnUnfocusedPlayer() {
+        val bounds = Rect(screen.width() / 3, screen.height() / 3, screen.right, screen.bottom)
+        val root = player(bounds)
+        val small = region(window(10, root, bounds, 2), Region(bounds))
+        val otherRoot = node(map, "", screen)
+        val main = region(window(20, otherRoot, screen, 1, true), Region(screen))
+        // ColorOS reports the same bounding rectangle for its hollow resize border and the app.
+        val border = Region(bounds).apply {
+            op(Rect(bounds.left + 3, bounds.top + 3, bounds.right - 3, bounds.bottom - 3), Region.Op.DIFFERENCE)
+        }
+        val decor = region(window(30, node("android", "", bounds), bounds, 3), border)
+        shadowOf(decor).setType(AccessibilityWindowInfo.TYPE_SYSTEM)
+        RootWindowShadow.root = otherRoot; RootWindowShadow.windowList = listOf(decor, small, main)
+        assertEquals(target, ForegroundAppResolver.current(context))
+        assertTrue(SkipAdAccessibilityService.observeEvidence(target)?.isAd == true)
+        val button = node(target, "跳过广告", Rect(bounds.left + 10, bounds.top + 40, bounds.right - 10, bounds.top + 60))
+            .apply { isClickable = true; isEnabled = true }
+        shadowOf(button).setOnPerformActionListener { _, _ -> true }; shadowOf(root).addChild(button)
+        assertTrue("透明中心内的按钮允许点击", SkipAdAccessibilityService.trySkipByClick(target))
+        border.op(Rect(bounds.left, bounds.top, bounds.right, bounds.top + 80), Region.Op.UNION)
+        region(decor, border)
+        val before = shadowOf(button).performedActions.size
+        assertFalse("装饰层实际区域内的按钮仍禁止点击", SkipAdAccessibilityService.trySkipByClick(target))
+        assertEquals(before, shadowOf(button).performedActions.size)
+    }
+
+    @Test @Config(sdk = [35]) fun irregularTargetRegionFullyCoveredCannotBeControlled() {
+        val root = player(screen)
+        val targetRegion = Region(Rect(0, 0, screen.width() / 3, screen.bottom)).apply {
+            op(Rect(screen.width() * 2 / 3, 0, screen.right, screen.bottom), Region.Op.UNION)
+        }
+        val main = region(window(10, root, screen, 1), targetRegion)
+        val cover = region(window(20, node(map, "", screen), screen, 2, true), Region(targetRegion))
+        RootWindowShadow.root = root; RootWindowShadow.windowList = listOf(cover, main)
+        assertNull(ForegroundAppResolver.current(context))
     }
 }

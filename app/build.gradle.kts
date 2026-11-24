@@ -16,8 +16,8 @@ android {
         applicationId = "com.example.skipad"
         minSdk = 24          // 兼容 Android 7.0+
         targetSdk = 34
-        versionCode = 13
-        versionName = "1.5.1"
+        versionCode = 14
+        versionName = "1.5.2"
         val staticOrigin = providers.gradleProperty("staticUpdateBaseUrl").orElse("").get().trim().trimEnd('/')
         require(staticOrigin.isEmpty() || runCatching {
             val uri = URI(staticOrigin)

@@ -22,11 +22,17 @@
 
 - [x] Gradle 用 staticUpdateBaseUrl 构建参数配置真实 HTTPS 站点；没有真实地址时不填入虚构地址，明确显示未配置。
 - [x] scripts/Prepare-UpdateSite.ps1 读取实际 APK 包名、versionName、versionCode、签名和 SHA256；生成 update.json、版本目录 APK、下载页、404 页和缓存响应头，限制 APK 不超过 Pages 25 MiB。
-- [ ] 完整测试、Lint、构建、校验生成清单及部署包；通过用户登录的 Cloudflare 免费账号网页发布。
-- [ ] 获取真实站点地址后构建接入包，核对公开版本信息与下载文件摘要；手机在线时验证下载与安装。未完成账号或手机步骤时如实记录，不以模拟测试声称端到端完成。
+- [x] 完整测试、Lint、构建、校验生成清单及部署包；通过用户登录的 Cloudflare 免费账号网页发布。
+- [x] 获取真实站点地址后构建接入包，核对公开版本信息与下载文件摘要；手机在线时验证下载与安装。未完成账号或手机步骤时如实记录，不以模拟测试声称端到端完成。
 
 用户已批准本方案并要求开始实施。当前 Cloudflare 浏览器停留登录页，已请用户自行登录；不在聊天中收集账号密码。
 
 用户随后选择自动发布：推送 main 后自动测试、构建、签名和上传。已准备 .github/workflows/android-release.yml，以及可在 Windows/Linux 运行的站点生成脚本。一次性创建 Cloudflare Pages Edit 发布令牌，并将其与现有签名密钥保存到指定 GitHub 仓库 Secrets，需要明确的凭据创建及密钥传输确认；确认前不执行这两项操作。
 
 2026-11-24：用户已自行创建 Cloudflare 令牌及 CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID。用户单独明确授权上传现有签名文件；已在本机加密后保存 ANDROID_SIGNING_KEYSTORE_BASE64，只核对 Secret 名称，不输出其内容。97 项本地回归通过，Lint 0 错误、9 警告，同签名构建检查通过。下一步执行首次真实 CI 发布。
+
+后续完成记录：自动发布 1.5.0、1.5.1 均成功。1.5.1 的 Actions run 45396123699 全部步骤成功，含构建、GitHub Release、Pages 发布及公开 APK 重新下载校验。站点为 https://douyin-skipad-updates.pages.dev；客户端无需 API Key。
+
+手机实际使用 DownloadManager 从静态站下载 1.5.1，状态 READY，大小 2837597 字节；SHA256 为 0afa0819a1e27cbaadbd8a16ab541f237c7482ce2d8f0201124487693d4d5a63。通过大小、包名、版本、签名及摘要验证后，拉回本机再次核对摘要，并将该实际下载文件通过 ADB 覆盖安装成功。保留用户原有 ANY 网络偏好。系统安装确认界面未做无人值守安装测试。
+
+发布方式：修改版本号与发布说明后推送 main，Actions 自动构建、签名和发布；同版本 APK 不覆盖。公开签名摘要保留在仓库，私钥和发布令牌仅在 GitHub Secrets 中。
