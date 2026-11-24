@@ -23,7 +23,7 @@
 3. 在项目根目录运行：
 
 ```powershell
-./scripts/Prepare-UpdateSite.ps1 -NotesPath 'docs/releases/v1.5.0.md'
+./scripts/Prepare-UpdateSite.ps1 -NotesPath 'docs/releases/v1.5.1.md'
 ```
 
 脚本从实际 APK 读取包名、版本名称、版本编号，并验证签名、计算大小及 SHA256，不手工填写摘要。输出 `build/update-site` 及可直接上传的 `build/update-site.zip`。APK 超过 Pages 25 MiB 限制时停止生成。
@@ -40,4 +40,4 @@
 
 默认先请求 `/update.json`，失败后尝试固定 GitHub 仓库的最新正式版。静态 APK 下载网络错误时最多切换一次到同版本 GitHub 直链；存储错误或包校验失败不会触发此切换。Wi-Fi、计费网络及漫游限制在两种下载来源中保持一致。
 
-首次从 1.4.1 升级需要手动安装一次 1.5.0：旧客户端只认识 GitHub 来源，无法自动读取新站点。安装后后续新版才会使用新来源自动检查和下载；安装仍由用户按系统提示确认。
+首次从 1.4.1 升级需要手动安装一次本次 1.5.1：旧客户端只认识 GitHub 来源，无法自动读取新站点。安装后后续新版才会使用新来源自动检查和下载；安装仍由用户按系统提示确认。

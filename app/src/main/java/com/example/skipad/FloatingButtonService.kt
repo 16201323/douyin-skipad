@@ -572,7 +572,9 @@ class FloatingButtonService : Service() {
         }
         val now = SystemClock.uptimeMillis()
         val result = MediaControlService.skipDouyinAd(this, target) {
-            canContinueSkip(isAuto, generation) && (!isAuto || ConfigManager.get(this).adRules.snapshot().version == actual?.rulesVersion)
+            canContinueSkip(isAuto, generation) && (!isAuto ||
+                (ConfigManager.get(this).adRules.snapshot().version == actual?.rulesVersion &&
+                    SkipAdAccessibilityService.matchesVisibleWindow(target, actual.windowId)))
         }
         if (result == MediaControlService.Companion.SkipResult.FAILED) {
             RecognitionHistory.record(this, "发送失败", "未找到可用的媒体会话或广告跳过按钮", actual, target)
@@ -662,7 +664,7 @@ class FloatingButtonService : Service() {
             !ConfigManager.get(this).isAppEnabled(target)) {
             val unavailable = when {
                 !SkipAdAccessibilityService.isRunning() -> "无障碍尚未连接，无法自动识别"
-                target == null -> "当前窗口不可读，未执行识别"
+                target == null -> "未发现可操作的目标应用窗口，未执行识别"
                 else -> "当前不在已启用的目标应用，未执行识别"
             }
             if (lastEvidenceSummary != unavailable) {

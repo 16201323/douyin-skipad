@@ -36,12 +36,15 @@ import java.io.File
 @Implements(AccessibilityService::class)
 class RootWindowShadow {
     @Implementation
+    fun getWindows(): List<android.view.accessibility.AccessibilityWindowInfo> = windowList
+    @Implementation
     fun getRootInActiveWindow(): AccessibilityNodeInfo? {
         onRead?.invoke()
         return root
     }
 
     companion object {
+        @Volatile var windowList: List<android.view.accessibility.AccessibilityWindowInfo> = emptyList()
         @Volatile var root: AccessibilityNodeInfo? = null
         @Volatile var onRead: (() -> Unit)? = null
     }

@@ -4,6 +4,8 @@ import android.accessibilityservice.AccessibilityService
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
+import android.view.accessibility.AccessibilityWindowInfo
+import android.graphics.Rect
 
 /**
  * 无障碍服务
@@ -42,6 +44,14 @@ class SkipAdAccessibilityService : AccessibilityService() {
                 Log.w(TAG, "读取当前窗口失败", e)
                 null
             }
+        }
+
+        /** 有焦点的小窗不一定是要识别的播放器；仅返回当前仍有可见区域的已启用目标。 */
+        internal fun getVisibleTargetPackage(): String? = instance?.resolveTargetWindow()?.root?.packageName?.toString()
+
+        internal fun matchesVisibleWindow(target: String, windowId: Int): Boolean {
+            val window = instance?.resolveTargetWindow() ?: return false
+            return window.windowId == windowId && window.root.packageName?.toString() == target
         }
 
         /**
@@ -130,18 +140,63 @@ class SkipAdAccessibilityService : AccessibilityService() {
     private fun detectAd(): Boolean = detectAd(null)
 
     private fun detectAd(targetPackage: String?): Boolean {
-        val target = targetPackage ?: rootInActiveWindow?.packageName?.toString() ?: return false
+        val target = targetPackage ?: resolveTargetWindow()?.root?.packageName?.toString() ?: return false
         return readEvidence(target)?.isAd == true
     }
 
     private fun readEvidence(target: String): AdObservation? {
         return try {
             if (!ConfigManager.get(this).isAppEnabled(target)) return null
-            val root = rootInActiveWindow ?: return null
-            AdDetector.inspectFocused(root, target, ConfigManager.get(this).adRules.snapshot())
+            val window = resolveTargetWindow() ?: return null
+            if (window.root.packageName?.toString() != target) return null
+            AdDetector.inspectFocused(window.root, target, ConfigManager.get(this).adRules.snapshot())?.copy(windowId = window.windowId)
         } catch (e: Exception) {
             Log.e(TAG, "读取广告证据失败", e)
             RecognitionHistory.record(this, "读取失败", "无法读取广告证据：${e.javaClass.simpleName}", packageName = target)
+            null
+        }
+    }
+
+    private data class TargetWindow(val root: AccessibilityNodeInfo, val windowId: Int,
+        val frame: AppWindowFrame?, val frames: List<AppWindowFrame>, val viewport: Rect) {
+        fun canClick(bounds: Rect): Boolean = if (frame == null) true
+            else VisibleWindowPolicy.canClick(frame, bounds, frames, viewport)
+    }
+
+    private var lastWindowTrace: String? = null
+
+    /** 每次重新获取交互窗口，先验证包名，再只读取选中的目标窗口内容。 */
+    private fun resolveTargetWindow(): TargetWindow? {
+        return try {
+            val config = ConfigManager.get(this)
+            val metrics = resources.displayMetrics
+            val viewport = Rect(0, 0, metrics.widthPixels, metrics.heightPixels)
+            val current = windows.orEmpty()
+            if (current.isEmpty()) {
+                val root = rootInActiveWindow ?: return null
+                if (!root.isVisibleToUser || !config.isAppEnabled(root.packageName?.toString().orEmpty())) return null
+                return TargetWindow(root, root.windowId, null, emptyList(), viewport)
+            }
+            if (current.size > 24) return null
+            val roots = mutableMapOf<Int, AccessibilityNodeInfo>()
+            val frames = current.mapIndexed { order, window ->
+                val bounds = Rect().also(window::getBoundsInScreen)
+                val root = if (window.type == AccessibilityWindowInfo.TYPE_APPLICATION) runCatching { window.root }.getOrNull() else null
+                val eligible = root?.isVisibleToUser == true && config.isAppEnabled(root.packageName?.toString().orEmpty())
+                if (eligible) roots[window.id] = requireNotNull(root)
+                AppWindowFrame(window.id, window.layer, order, bounds, eligible, window.isFocused, window.isActive)
+            }
+            val selected = VisibleWindowPolicy.select(frames, viewport) ?: return null
+            val root = roots[selected.id] ?: return null
+            val trace = "target=${root.packageName} selected=${selected.id} " +
+                frames.joinToString { "id=${it.id}/layer=${it.layer}/focus=${it.focused}/eligible=${it.eligible}/bounds=${it.bounds.toShortString()}" }
+            if (lastWindowTrace != trace) {
+                lastWindowTrace = trace
+                Log.i(TAG, "WindowSelection $trace")
+            }
+            TargetWindow(root, selected.id, selected, frames, viewport)
+        } catch (e: Exception) {
+            Log.w(TAG, "读取可见目标窗口失败：${e.javaClass.simpleName}")
             null
         }
     }
@@ -186,7 +241,8 @@ class SkipAdAccessibilityService : AccessibilityService() {
      * 抖音广告界面可能有"跳过"按钮（倒计时结束后出现）
      */
     private fun clickSkipButton(targetPackage: String, canProceed: () -> Boolean): Boolean {
-        val rootNode = rootInActiveWindow ?: return false
+        val selectedWindow = resolveTargetWindow() ?: return false
+        val rootNode = selectedWindow.root
         if (rootNode.packageName?.toString() != targetPackage ||
             !ConfigManager.get(this).isAppEnabled(targetPackage)) return false
         try {
@@ -207,8 +263,13 @@ class SkipAdAccessibilityService : AccessibilityService() {
                     val clickable = findClickableAncestor(node)
                     if (clickable != null && clickable.isVisibleToUser && clickable.isEnabled &&
                         clickable.packageName?.toString() == targetPackage) {
+                        val bounds = Rect().also(clickable::getBoundsInScreen)
+                        if (!selectedWindow.canClick(bounds)) continue
                         Log.d(TAG, "找到跳过按钮: \"${node.text}\"，执行点击")
                         if (!canProceed()) return false
+                        val latest = resolveTargetWindow() ?: return false
+                        if (latest.windowId != selectedWindow.windowId || latest.root.packageName?.toString() != targetPackage ||
+                            !latest.canClick(bounds)) return false
                         if (clickable.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return true
                     }
                 }

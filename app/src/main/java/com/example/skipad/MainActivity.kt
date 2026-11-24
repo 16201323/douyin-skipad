@@ -67,7 +67,8 @@ class MainActivity : AppCompatActivity() {
     private var statusTitle: TextView? = null
     private var statusDetail: TextView? = null
     private var statusBadge: TextView? = null
-    private var serviceToggle: Button? = null
+    private var automaticToggle: SwitchCompat? = null
+    private var automaticToggleListener: CompoundButton.OnCheckedChangeListener? = null
     private var todayCountView: TextView? = null
     private var weekCountView: TextView? = null
     private var readinessText: TextView? = null
@@ -85,13 +86,13 @@ class MainActivity : AppCompatActivity() {
     private var waitingForAccessibilityPermission = false
 
     // 独立的悬浮窗显示开关，从设置返回后同步授权与显示意愿。
-    private var autoSkipCheckBox: CompoundButton? = null
+    private var floatingToggle: CompoundButton? = null
     // 跳过统计展示（成员变量，便于 onResume 时刷新最新数字）
     private var statsView: TextView? = null
     // 权限状态展示（成员变量，从系统设置返回后需立即刷新，否则一直显示旧的 ❌）
     private var permStatusView: TextView? = null
-    // 自动跳过复选框的监听器（成员变量，便于刷新时重新设置）
-    private var autoSkipListener: android.widget.CompoundButton.OnCheckedChangeListener? = null
+    // 显示悬浮窗开关的监听器，与自动跳过分开保存。
+    private var floatingToggleListener: CompoundButton.OnCheckedChangeListener? = null
     private val notificationPermissionLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
 
     // ===== 图片模式相关 =====
@@ -164,10 +165,10 @@ class MainActivity : AppCompatActivity() {
         // 授权齐全时打开 App 即启动；主动暂停保留，不因返回首页重新打开。
         checkAndProceed()
         // 刷新复选框状态
-        autoSkipCheckBox?.let { cb ->
+        floatingToggle?.let { cb ->
             cb.setOnCheckedChangeListener(null)
             cb.isChecked = config.floatingEnabled
-            cb.setOnCheckedChangeListener(autoSkipListener)
+            cb.setOnCheckedChangeListener(floatingToggleListener)
         }
         refreshRuntimeUi()
         uiHandler.removeCallbacks(statusTick)
@@ -354,11 +355,11 @@ class MainActivity : AppCompatActivity() {
 
     private fun showPage(index: Int) {
         selectedPage = index.coerceIn(0, 2)
-        autoSkipCheckBox = null
+        floatingToggle = null
         floatingPreview = null
         imagePreview = null
         imageOptions = null
-        statusTitle = null; statusDetail = null; statusBadge = null; serviceToggle = null
+        statusTitle = null; statusDetail = null; statusBadge = null; automaticToggle = null; automaticToggleListener = null
         todayCountView = null; weekCountView = null; readinessText = null
         permissionRefreshers.clear()
         pageHost.removeAllViews()
@@ -432,19 +433,33 @@ class MainActivity : AppCompatActivity() {
         top.addView(ui.icon(R.drawable.ic_skip, size = 32))
         hero.addView(top)
         hero.addView(ui.space(18))
-        statusTitle = ui.label("准备好再出发", 23f, medium = true)
+        statusTitle = ui.label("准备好再出发", 23f, medium = true).apply { tag = "runtime_status_title" }
         statusDetail = ui.label("自动识别广告，无需显示悬浮按钮。", 13f, ui.secondary)
         hero.addView(statusTitle)
         hero.addView(ui.space(9))
         hero.addView(statusDetail)
         hero.addView(ui.space(20))
-        serviceToggle = ui.button("恢复自动跳过", true) {
-            config.autoSkip = !config.autoSkip
-            if (config.autoSkip) checkAndProceed() else syncWorker()
+        val automaticRow = ui.row().apply { tag = "service_toggle" }
+        val automaticWords = ui.column()
+        automaticWords.addView(ui.label("自动跳过", 17f, medium = true))
+        automaticWords.addView(ui.space(5))
+        automaticWords.addView(ui.label("记住开关状态，无需开启悬浮窗", 12f, ui.secondary))
+        automaticRow.addView(automaticWords, LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = ui.dp(12) })
+        automaticToggle = SwitchCompat(this).apply {
+            tag = "auto_skip_toggle"; contentDescription = "自动跳过"
+            minimumHeight = ui.dp(48); isChecked = config.autoSkip
+        }
+        automaticToggleListener = CompoundButton.OnCheckedChangeListener { _, checked ->
+            config.autoSkip = checked
+            if (checked) checkAndProceed() else syncWorker()
             refreshRuntimeUi()
             uiHandler.postDelayed({ refreshRuntimeUi() }, 300L)
-        }.apply { tag = "service_toggle" }
-        hero.addView(serviceToggle, LinearLayout.LayoutParams(-1, -2))
+        }
+        automaticToggle!!.setOnCheckedChangeListener(automaticToggleListener)
+        automaticRow.addView(automaticToggle)
+        hero.addView(automaticRow)
+        hero.addView(ui.space(14))
+        hero.addView(ui.button("检查权限") { showPage(2) }.apply { tag = "check_permissions" }, LinearLayout.LayoutParams(-1, -2))
         parent.addView(hero)
 
         val stats = ui.card()
@@ -485,12 +500,12 @@ class MainActivity : AppCompatActivity() {
             minimumHeight = ui.dp(48)
             buttonTintList = ColorStateList.valueOf(ui.accent)
         }
-        autoSkipCheckBox = toggle
-        autoSkipListener = CompoundButton.OnCheckedChangeListener { _, checked ->
+        floatingToggle = toggle
+        floatingToggleListener = CompoundButton.OnCheckedChangeListener { _, checked ->
             if (checked) startFloatingButton() else stopFloatingButton()
             refreshRuntimeUi()
         }
-        toggle.setOnCheckedChangeListener(autoSkipListener)
+        toggle.setOnCheckedChangeListener(floatingToggleListener)
         row.addView(toggle)
         automatic.addView(row)
         parent.addView(automatic)
@@ -602,15 +617,22 @@ class MainActivity : AppCompatActivity() {
 
         val permissions = ui.card()
         cardTitle(permissions, "权限与连接", "系统授权与服务连接状态分开展示。")
-        permissionRow(permissions, "通知使用权", "读取播放器控制会话", "notification",
+        permissionRow(permissions, "通知使用权", "自动跳过必需 · 获取播放器控制会话", "notification",
             { isNotificationListenerEnabled() }, { openNotificationListenerSettings() })
-        permissionRow(permissions, "悬浮窗", "在其他应用上层显示按钮", "overlay",
-            { canDrawOverlays() }, { openOverlaySettings() })
-        permissionRow(permissions, "无障碍服务", "自动识别广告需要此服务", "accessibility",
+        permissionRow(permissions, "悬浮窗", "可选 · 仅显示悬浮按钮时需要", "overlay",
+            { canDrawOverlays() }, { openOverlaySettings() }, { if (config.floatingEnabled) "未开启" else "未开启 · 可选" })
+        permissionRow(permissions, "无障碍服务", "自动跳过必需 · 识别界面中的广告提示", "accessibility",
             { SkipAdAccessibilityService.isRunning() }, { openAccessibilitySettings() },
             { if (isAccessibilityServiceEnabled()) "已授权 · 待连接" else "未开启" })
-        permissionRow(permissions, "使用情况访问", "未启用无障碍时，用于判断当前应用", "usage",
-            { hasUsageStatsPermission() }, { openUsageAccessSettings() })
+        permissionRow(permissions, "使用情况访问", "可选 · 未启用无障碍时供手动跳过判断前台", "usage",
+            { hasUsageStatsPermission() }, { openUsageAccessSettings() }, { "未开启 · 可选" })
+        if (Build.VERSION.SDK_INT >= 33) {
+            permissions.addView(ui.divider())
+            permissionRow(permissions, "通知显示", "可选 · 显示运行状态和版本更新通知", "notifications",
+                { checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) == android.content.pm.PackageManager.PERMISSION_GRANTED },
+                { startActivity(Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, packageName)) },
+                { "已关闭 · 可选" })
+        }
         parent.addView(permissions)
 
         val detection = ui.card()
@@ -668,7 +690,7 @@ class MainActivity : AppCompatActivity() {
         labels.addView(ui.space(5))
         labels.addView(ui.label(description, 11f, ui.secondary))
         row.addView(labels, LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = ui.dp(12) })
-        val state = ui.label("", 11f, medium = true)
+        val state = ui.label("", 11f, medium = true).apply { tag = "permission_${key}_state" }
         row.addView(state)
         row.addView(ui.label("  ›", 22f, ui.secondary))
         permissionRefreshers.add {
@@ -697,26 +719,40 @@ class MainActivity : AppCompatActivity() {
     private fun refreshRuntimeUi() {
         if (!::ui.isInitialized) return
         val running = isFloatingServiceRunning()
-        val basicReady = isNotificationListenerEnabled() && SkipAdAccessibilityService.isRunning()
+        val notificationReady = isNotificationListenerEnabled()
+        val accessibilityReady = SkipAdAccessibilityService.isRunning()
+        val basicReady = notificationReady && accessibilityReady
         val automaticRunning = running && config.autoSkip && basicReady
-        statusBadge?.text = if (automaticRunning) "●  运行中" else if (!config.autoSkip) "○  已暂停" else "○  待就绪"
+        statusBadge?.text = if (automaticRunning) "●  运行中" else if (!config.autoSkip) "○  已关闭" else "○  待就绪"
         statusBadge?.setTextColor(if (automaticRunning) ui.accent else ui.secondary)
         statusTitle?.text = when {
-            !config.autoSkip -> "自动跳过已暂停"
+            !config.autoSkip -> "自动跳过已关闭"
+            !notificationReady -> "等待通知使用权"
+            !accessibilityReady && isAccessibilityServiceEnabled() -> "无障碍服务未连接"
+            !accessibilityReady -> "等待无障碍授权"
             automaticRunning -> "自动跳过运行中"
             else -> "等待权限与服务就绪"
         }
         statusDetail?.text = when {
-            !config.autoSkip -> "恢复后继续识别广告；关闭界面也会记住暂停状态。"
-            !basicReady -> "完成通知使用权和无障碍授权后，即可自动识别广告。"
+            !config.autoSkip -> "开启后自动识别广告；关闭界面也会记住开关状态。"
+            !notificationReady -> "点击检查权限，开启通知使用权后才能控制播放器。"
+            !accessibilityReady && isAccessibilityServiceEnabled() -> "已获得无障碍授权，但服务尚未连接。请检查系统中的服务状态。"
+            !accessibilityReady -> "点击检查权限，开启无障碍服务后才能识别广告。"
             automaticRunning -> "无需悬浮按钮，进入已选择的应用即可使用。"
             else -> "后台服务尚未运行，请重试或检查系统后台限制。"
         }
-        serviceToggle?.text = if (config.autoSkip) "暂停自动跳过" else "恢复自动跳过"
+        automaticToggle?.let { toggle ->
+            if (toggle.isChecked != config.autoSkip) {
+                toggle.setOnCheckedChangeListener(null)
+                toggle.isChecked = config.autoSkip
+                toggle.setOnCheckedChangeListener(automaticToggleListener)
+            }
+        }
         todayCountView?.text = config.getTodaySkipCount().toString()
         weekCountView?.text = config.getWeekSkipCount().toString()
         readinessText?.text = when {
             !basicReady -> "自动跳过需要通知使用权与已连接的无障碍服务。"
+            !config.autoSkip -> "必需权限已就绪；自动跳过开关当前关闭。"
             config.floatingEnabled && !canDrawOverlays() -> "自动跳过已就绪；手动按钮还需要悬浮窗权限。"
             else -> "自动跳过已就绪，无需授予悬浮窗权限。"
         }
