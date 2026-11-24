@@ -12,8 +12,8 @@ android {
         applicationId = "com.example.skipad"
         minSdk = 24          // 兼容 Android 7.0+
         targetSdk = 34
-        versionCode = 9
-        versionName = "1.3.0"
+        versionCode = 11
+        versionName = "1.4.1"
         testInstrumentationRunner = "com.example.skipad.UiPreviewInstrumentation"
     }
 

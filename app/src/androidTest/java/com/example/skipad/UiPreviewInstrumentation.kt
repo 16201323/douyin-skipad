@@ -12,15 +12,21 @@ import android.view.ViewGroup
 import android.widget.ScrollView
 import androidx.appcompat.app.AppCompatDelegate
 import java.io.File
+import java.security.MessageDigest
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 /** 仅测试包：捕获 Activity 自身视图，排除系统悬浮窗，不修改手机全局主题。 */
 class UiPreviewInstrumentation : Instrumentation() {
+    private var verifyUpdate = false
     override fun onCreate(arguments: Bundle?) {
         super.onCreate(arguments)
+        verifyUpdate = arguments?.getString("verify_update") == "true"
         start()
     }
 
     override fun onStart() {
+        if (verifyUpdate) { verifyRealUpdate(); return }
         val output = Bundle()
         val captured = mutableListOf<String>()
         val config = ConfigManager.get(targetContext)
@@ -62,7 +68,8 @@ class UiPreviewInstrumentation : Instrumentation() {
                 }
                 runOnMainSync { scrollIn(activity.window.decorView)?.fullScroll(View.FOCUS_DOWN) }
                 capture(activity, "ui-$theme-releases")
-                for ((name, activityClass) in listOf("rules" to RulesActivity::class.java, "history" to RecognitionHistoryActivity::class.java)) {
+                for ((name, activityClass) in listOf("rules" to RulesActivity::class.java, "history" to RecognitionHistoryActivity::class.java,
+                    "updates" to AppUpdateActivity::class.java)) {
                     val details = startActivitySync(Intent(targetContext, activityClass).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
                     capture(details, "ui-$theme-$name")
                     runOnMainSync { details.finish() }
@@ -76,6 +83,46 @@ class UiPreviewInstrumentation : Instrumentation() {
             config.themeMode = originalTheme
             runOnMainSync { AppCompatDelegate.setDefaultNightMode(originalTheme) }
             output.putString("stream", "UI preview failed: ${e.javaClass.simpleName}: ${e.message}")
+            finish(Activity.RESULT_CANCELED, output)
+        }
+    }
+
+    /** 真机检查真实 GitHub 元数据、DownloadManager 和包校验；不改变网络偏好，不拉起安装器。 */
+    private fun verifyRealUpdate() {
+        val output = Bundle()
+        val engine = AppUpdates.engine(targetContext)
+        fun runOnUpdateThread(action: () -> UpdateView): UpdateView {
+            val done = CountDownLatch(1)
+            var result: UpdateView? = null
+            var error: Exception? = null
+            AppUpdates.execute { try { result = action() } catch (e: Exception) { error = e } finally { done.countDown() } }
+            check(done.await(45, TimeUnit.SECONDS)) { "检查更新超时" }
+            error?.let { throw it }
+            return requireNotNull(result)
+        }
+        try {
+            var state = runOnUpdateThread { engine.check(true) }
+            val deadline = SystemClock.uptimeMillis() + 45_000
+            while (state.phase in listOf(UpdatePhase.QUEUED, UpdatePhase.DOWNLOADING) && SystemClock.uptimeMillis() < deadline) {
+                sendStatus(1, Bundle().apply { putString("stream", "update ${state.phase} ${state.downloaded}/${state.total}") })
+                SystemClock.sleep(2000)
+                state = runOnUpdateThread { engine.refresh() }
+            }
+            output.putString("installed", engine.currentVersion)
+            output.putString("network", engine.store.network.name)
+            output.putString("phase", state.phase.name)
+            output.putString("message", state.message)
+            output.putString("release", state.release?.version?.toString())
+            if (state.phase == UpdatePhase.READY) {
+                val file = engine.fileForInstall()
+                val hash = MessageDigest.getInstance("SHA-256").digest(file.readBytes()).joinToString("") { "%02x".format(it) }
+                output.putString("file", file.absolutePath)
+                output.putString("sha256", hash)
+                output.putLong("bytes", file.length())
+            }
+            finish(Activity.RESULT_OK, output)
+        } catch (e: Exception) {
+            output.putString("stream", "Update verification failed: ${e.javaClass.simpleName}: ${e.message}")
             finish(Activity.RESULT_CANCELED, output)
         }
     }

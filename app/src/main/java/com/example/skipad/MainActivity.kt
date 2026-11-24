@@ -156,6 +156,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+        AppUpdateScheduler.onAppOpened(this)
         // 从抖音自动跳过后返回本页，刷新统计数字（今日/本周可能已增加）
         refreshStatsView()
         // 从系统设置返回，刷新权限状态（否则无障碍已开却仍显示 ❌）
@@ -622,6 +623,9 @@ class MainActivity : AppCompatActivity() {
         cardTitle(about, "关于")
         val version = packageManager.getPackageInfo(packageName, 0).versionName ?: ""
         about.addView(ui.label("抖音跳广告助手  ·  $version", 12f, ui.secondary))
+        about.addView(ui.space(12))
+        about.addView(ui.button("软件更新", true) { startActivity(Intent(this, AppUpdateActivity::class.java)) }
+            .apply { tag = "app_update" }, LinearLayout.LayoutParams(-1, -2))
         about.addView(ui.space(8))
         about.addView(ui.label("识别存在覆盖限制，未自动跳过时可手动点击悬浮窗。", 12f, ui.secondary))
         about.addView(ui.space(18)); about.addView(ui.divider()); about.addView(ui.space(16))
@@ -629,7 +633,7 @@ class MainActivity : AppCompatActivity() {
         about.addView(ui.space(6))
         about.addView(ui.label("打开 GitHub Release 列表，自行选择版本并下载 APK。", 12f, ui.secondary))
         about.addView(ui.space(10))
-        val releasesUrl = "https://github.com/16201323/douyin-skipad/releases"
+        val releasesUrl = UpdateRelease.RELEASES_URL
         about.addView(ui.label(releasesUrl, 12f, ui.accent).apply {
             tag = "release_list_url"; setTextIsSelectable(true)
         })
