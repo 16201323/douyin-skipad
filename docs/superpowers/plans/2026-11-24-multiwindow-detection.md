@@ -28,3 +28,7 @@ getWindows 返回默认显示器上可交互窗口，按层级排序；需 canRe
 1.5.2 真机日志21:00:39及21:00:44均选中抖音 window6632，bounds=[687,1210][1246,2204]、eligible=true、focus=false，其他主窗口持有焦点。确认透明装饰层下的失焦目标已被选中；当时正常短剧画面没有广告，尚不能将这条窗口选择记录当作完整广告跳过成功。测试没有改动其他应用内容或授予新权限。
 
 区域接口依据：https://developer.android.com/reference/android/view/accessibility/AccessibilityWindowInfo#getRegionInScreen(android.graphics.Region) 。该接口提供可触摸区域，不是通用像素不透明度检测；对系统未暴露节点的缩略预览仍不猜测广告或发送盲跳。
+
+后续完整跳过验证：21:02:07 同一抖音小窗6632识别 HIGH、automatic=true 发送请求，21:02:09 确认广告消失，request_to_confirm_ms=1239。21:02:46 再次在 scope=com.ss.android.ugc.aweme:6632 记录 MEDIUM→HIGH，自动请求后1357ms确认消失，随后恢复 NONE 正常播放器证据。期间21:02:21、21:02:25的窗口选择均为抖音 focus=false、eligible=true，主窗口焦点在本应用；随后系统窗口元数据也确认该失焦小窗仍为6632。因此失焦小窗已有完整识别、请求、画面消失确认的真机证据，非仅模拟或媒体请求发送成功。精简日志保存在本机 app/build/deployment/1.5.2-unfocused-recognition.log，不包含页面全文。
+
+最终发布：提交10ba0ba触发 Actions run45399330135，全部步骤成功，GitHub Release v1.5.2和Pages均发布。重新下载公开APK，大小2836805字节，SHA256=224ed143fecbd01560f589e57dc6877c2bfb154711bd8aabdbab9f2477a1e8de；包名、versionCode14及既有签名核对成功。该公开文件已保存至项目根目录 douyin-skipad-release.apk 并覆盖安装到手机；安装后系统确认无障碍已绑定、前台服务正在运行。公开地址：https://douyin-skipad-updates.pages.dev/releases/v1.5.2/douyin-skipad-release.apk 。
