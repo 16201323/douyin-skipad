@@ -43,7 +43,10 @@ jobs:
           [IO.File]::WriteAllBytes($keyFile, [Convert]::FromBase64String($env:KEYSTORE_BASE64))
           "SKIPAD_SIGNING_STORE_FILE=$keyFile" | Out-File -LiteralPath $env:GITHUB_ENV -Append -Encoding utf8
       - name: Install Android SDK 34
-        run: sdkmanager 'platforms;android-34' 'build-tools;34.0.0'
+        run: |
+          sdkmanager_path="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          test -x "$sdkmanager_path"
+          "$sdkmanager_path" 'platforms;android-34' 'build-tools;34.0.0'
       - name: Test, lint and build signed APK
         run: gradle --no-daemon :app:testDebugUnitTest :app:lintDebug :app:assembleRelease
       - name: Resolve immutable release package
