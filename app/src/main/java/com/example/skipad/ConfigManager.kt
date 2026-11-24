@@ -14,6 +14,7 @@ import java.util.Locale
 class ConfigManager private constructor(context: Context) {
 
     private val prefs: SharedPreferences = context.getSharedPreferences("skip_ad_config", Context.MODE_PRIVATE)
+    internal val adRules = AdRuleStore(context.applicationContext)
 
     companion object {
         // 配置键名

@@ -8,6 +8,8 @@ import android.graphics.Canvas
 import android.os.Bundle
 import android.os.SystemClock
 import android.view.View
+import android.view.ViewGroup
+import android.widget.ScrollView
 import androidx.appcompat.app.AppCompatDelegate
 import java.io.File
 
@@ -26,6 +28,29 @@ class UiPreviewInstrumentation : Instrumentation() {
         try {
             val directory = requireNotNull(targetContext.getExternalFilesDir("ui-preview"))
             check(directory.exists() || directory.mkdirs())
+            fun capture(activity: Activity, name: String) {
+                waitForIdleSync()
+                SystemClock.sleep(220L)
+                var captureError: Exception? = null
+                runOnMainSync { try {
+                    val root = activity.window.decorView
+                    check(root.width > 0 && root.height > 0)
+                    val bitmap = Bitmap.createBitmap(root.width, root.height, Bitmap.Config.ARGB_8888)
+                    root.draw(Canvas(bitmap))
+                    val file = File(directory, "$name.png")
+                    file.outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
+                    bitmap.recycle()
+                    captured.add(file.absolutePath)
+                } catch (e: Exception) { captureError = e } }
+                captureError?.let { throw it }
+            }
+            fun scrollIn(view: View): ScrollView? {
+                if (view is ScrollView) return view
+                if (view is ViewGroup) for (index in 0 until view.childCount) {
+                    scrollIn(view.getChildAt(index))?.let { return it }
+                }
+                return null
+            }
             for ((theme, mode) in listOf("light" to AppCompatDelegate.MODE_NIGHT_NO,
                 "dark" to AppCompatDelegate.MODE_NIGHT_YES)) {
                 config.themeMode = mode
@@ -33,20 +58,14 @@ class UiPreviewInstrumentation : Instrumentation() {
                     .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK))
                 for ((page, tag) in listOf("home" to "nav_home", "appearance" to "nav_appearance", "settings" to "nav_settings")) {
                     runOnMainSync { activity.window.decorView.findViewWithTag<View>(tag).performClick() }
-                    waitForIdleSync()
-                    SystemClock.sleep(220L)
-                    var captureError: Exception? = null
-                    runOnMainSync { try {
-                        val root = activity.window.decorView
-                        check(root.width > 0 && root.height > 0)
-                        val bitmap = Bitmap.createBitmap(root.width, root.height, Bitmap.Config.ARGB_8888)
-                        root.draw(Canvas(bitmap))
-                        val file = File(directory, "ui-$theme-$page.png")
-                        file.outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
-                        bitmap.recycle()
-                        captured.add(file.absolutePath)
-                    } catch (e: Exception) { captureError = e } }
-                    captureError?.let { throw it }
+                    capture(activity, "ui-$theme-$page")
+                }
+                runOnMainSync { scrollIn(activity.window.decorView)?.fullScroll(View.FOCUS_DOWN) }
+                capture(activity, "ui-$theme-releases")
+                for ((name, activityClass) in listOf("rules" to RulesActivity::class.java, "history" to RecognitionHistoryActivity::class.java)) {
+                    val details = startActivitySync(Intent(targetContext, activityClass).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                    capture(details, "ui-$theme-$name")
+                    runOnMainSync { details.finish() }
                 }
             }
             output.putString("stream", captured.joinToString("\n"))

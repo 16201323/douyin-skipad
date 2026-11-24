@@ -3,7 +3,7 @@ package com.example.skipad
 /** 独立于 Android 定时器的确认/去重状态。未知页面只取消候选，不解除已执行锁。 */
 internal class AdSkipGate {
     data class Decision(val send: Boolean = false, val recheckMs: Long? = null, val newCandidate: Boolean = false)
-    private data class Candidate(val scope: String, val confidence: AdConfidence, val firstAt: Long)
+    private data class Candidate(val scope: String, val confidence: AdConfidence, val ruleKey: String, val firstAt: Long)
     private data class ClearState(val scope: String, val since: Long)
     private var candidate: Candidate? = null
     private val attemptedPackages = mutableSetOf<String>()
@@ -43,8 +43,8 @@ internal class AdSkipGate {
         }
         val previous = candidate
         val changed = previous == null || previous.scope != observation.scope ||
-            previous.confidence != observation.confidence
-        if (changed) candidate = Candidate(observation.scope, observation.confidence, now)
+            previous.confidence != observation.confidence || previous.ruleKey != observation.ruleKey
+        if (changed) candidate = Candidate(observation.scope, observation.confidence, observation.ruleKey, now)
         val current = candidate!!
         val dueAt = maxOf(current.firstAt + current.confidence.confirmMs, nextAllowedAt)
         return if (now >= dueAt) Decision(send = true)

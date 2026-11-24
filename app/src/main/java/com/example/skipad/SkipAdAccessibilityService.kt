@@ -85,6 +85,7 @@ class SkipAdAccessibilityService : AccessibilityService() {
         super.onServiceConnected()
         instance = this
         Log.d(TAG, "无障碍服务已连接")
+        RecognitionHistory.record(this, "服务连接", "无障碍服务已连接")
         // 前台根节点由检测线程按需获取，绑定回调不在 UI 线程预读取。
     }
 
@@ -109,6 +110,7 @@ class SkipAdAccessibilityService : AccessibilityService() {
         instance = null
         foregroundPackage = null
         Log.d(TAG, "无障碍服务已解绑")
+        RecognitionHistory.record(this, "服务连接", "无障碍服务已断开")
         return super.onUnbind(intent)
     }
 
@@ -136,9 +138,10 @@ class SkipAdAccessibilityService : AccessibilityService() {
         return try {
             if (!ConfigManager.get(this).isAppEnabled(target)) return null
             val root = rootInActiveWindow ?: return null
-            AdDetector.inspectFocused(root, target)
+            AdDetector.inspectFocused(root, target, ConfigManager.get(this).adRules.snapshot())
         } catch (e: Exception) {
             Log.e(TAG, "读取广告证据失败", e)
+            RecognitionHistory.record(this, "读取失败", "无法读取广告证据：${e.javaClass.simpleName}", packageName = target)
             null
         }
     }

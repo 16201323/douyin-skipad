@@ -588,6 +588,17 @@ class MainActivity : AppCompatActivity() {
         apps.addView(createAppSelector())
         parent.addView(apps)
 
+        val recognition = ui.card()
+        cardTitle(recognition, "广告识别", "维护关键词，查看最近的识别与跳过结果。")
+        recognition.addView(ui.button("管理识别规则", true) {
+            startActivity(Intent(this, RulesActivity::class.java))
+        }.apply { tag = "manage_rules" }, LinearLayout.LayoutParams(-1, -2))
+        recognition.addView(ui.space(10))
+        recognition.addView(ui.button("最近识别记录") {
+            startActivity(Intent(this, RecognitionHistoryActivity::class.java))
+        }.apply { tag = "recognition_history" }, LinearLayout.LayoutParams(-1, -2))
+        parent.addView(recognition)
+
         val permissions = ui.card()
         cardTitle(permissions, "权限与连接", "系统授权与服务连接状态分开展示。")
         permissionRow(permissions, "通知使用权", "读取播放器控制会话", "notification",
@@ -613,6 +624,29 @@ class MainActivity : AppCompatActivity() {
         about.addView(ui.label("抖音跳广告助手  ·  $version", 12f, ui.secondary))
         about.addView(ui.space(8))
         about.addView(ui.label("识别存在覆盖限制，未自动跳过时可手动点击悬浮窗。", 12f, ui.secondary))
+        about.addView(ui.space(18)); about.addView(ui.divider()); about.addView(ui.space(16))
+        about.addView(ui.label("历史版本与下载", 15f, medium = true))
+        about.addView(ui.space(6))
+        about.addView(ui.label("打开 GitHub Release 列表，自行选择版本并下载 APK。", 12f, ui.secondary))
+        about.addView(ui.space(10))
+        val releasesUrl = "https://github.com/16201323/douyin-skipad/releases"
+        about.addView(ui.label(releasesUrl, 12f, ui.accent).apply {
+            tag = "release_list_url"; setTextIsSelectable(true)
+        })
+        about.addView(ui.space(12))
+        val downloads = ui.row()
+        downloads.addView(ui.button("打开历史版本") {
+            try { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(releasesUrl))) }
+            catch (_: android.content.ActivityNotFoundException) {
+                Toast.makeText(this, "未找到浏览器，请复制地址后打开", Toast.LENGTH_SHORT).show()
+            }
+        }.apply { tag = "open_releases" }, LinearLayout.LayoutParams(0, -2, 1f))
+        downloads.addView(ui.button("复制地址") {
+            (getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager)
+                .setPrimaryClip(android.content.ClipData.newPlainText("历史版本与下载", releasesUrl))
+            Toast.makeText(this, "已复制历史版本地址", Toast.LENGTH_SHORT).show()
+        }.apply { tag = "copy_releases" }, LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = ui.dp(8) })
+        about.addView(downloads)
         parent.addView(about)
     }
 

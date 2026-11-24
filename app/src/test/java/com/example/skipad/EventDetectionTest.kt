@@ -293,4 +293,40 @@ class EventDetectionTest {
         assertEquals(0, CountingTransportShadow.count)
         service.destroy()
     }
+
+    @Test fun editingRulesDuringFinalReadCancelsOldRequest() {
+        val service = startAutomaticService()
+        RootWindowShadow.root = player("5秒后可继续看下一集")
+        contentEvent()
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(100))
+        var reads = 0
+        RootWindowShadow.onRead = {
+            if (++reads == 3) {
+                val store = ConfigManager.get(context).adRules
+                store.save(store.snapshot().rules.map { it.copy(name = (it.name + "新版").take(32)) })
+            }
+        }
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(500))
+        assertTrue(reads >= 3)
+        assertEquals(0, CountingTransportShadow.count)
+        service.destroy()
+    }
+
+    @Test fun confirmedHistoryRetainsTheRuleWhichSentTheRequest() {
+        RecognitionHistory.clear(context)
+        val service = startAutomaticService()
+        RootWindowShadow.root = player("5秒后可继续看下一集")
+        contentEvent()
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(300))
+        assertEquals(1, CountingTransportShadow.count)
+        val request = RecognitionHistory.load(context).last { it.kind == "已发送请求" }
+        assertEquals("builtin_next", request.ruleId)
+        RootWindowShadow.root = player()
+        contentEvent()
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(1100))
+        val confirmed = RecognitionHistory.load(context).last { it.kind == "已确认跳过" }
+        assertEquals(request.ruleId, confirmed.ruleId)
+        assertEquals(request.ruleName, confirmed.ruleName)
+        service.destroy()
+    }
 }

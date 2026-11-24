@@ -61,6 +61,12 @@ class FloatingButtonService : Service() {
 
         internal fun isRunning(): Boolean = runningInstance?.pollingStarted == true
 
+        internal fun onRulesChanged() {
+            val service = runningInstance ?: return
+            service.interactionGeneration.incrementAndGet()
+            service.scheduleDetection(0L, "rules_changed")
+        }
+
         internal fun onAccessibilityChange(pkg: String?, windowChange: Boolean) {
             val service = runningInstance ?: return
             if (!service.pollingStarted) return
@@ -103,6 +109,7 @@ class FloatingButtonService : Service() {
         val startedAt: Long,
         val automatic: Boolean,
         var fallbackTried: Boolean,
+        val evidence: AdObservation,
         var clearSince: Long? = null
     )
     @Volatile private var pendingSkip: PendingSkip? = null
@@ -181,6 +188,8 @@ class FloatingButtonService : Service() {
                 checkShouldShow()
                 val notificationState = "${config.autoSkip}:${SkipAdAccessibilityService.isRunning()}:${config.floatingEnabled}:${Settings.canDrawOverlays(this@FloatingButtonService)}"
                 if (notificationState != lastNotificationState) {
+                    RecognitionHistory.record(this@FloatingButtonService, "运行状态",
+                        "自动识别${if (config.autoSkip) "开启" else "暂停"}；无障碍${if (SkipAdAccessibilityService.isRunning()) "已连接" else "未连接"}；悬浮窗${if (config.floatingEnabled) "开启" else "关闭"}")
                     if (Build.VERSION.SDK_INT < 33 || checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) ==
                         android.content.pm.PackageManager.PERMISSION_GRANTED) {
                         getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, createNotification())
@@ -213,6 +222,7 @@ class FloatingButtonService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val config = ConfigManager.get(this)
         if (intent?.action == ACTION_STOP) {
+            RecognitionHistory.record(this, "运行状态", "用户停止自动识别及悬浮窗")
             config.floatingEnabled = false
             config.autoSkip = false
             pollingStarted = false
@@ -223,6 +233,7 @@ class FloatingButtonService : Service() {
         if (intent?.action == ACTION_RESUME_AUTO) config.autoSkip = true
         if (intent?.action == ACTION_SHOW_FLOATING) config.floatingEnabled = true
         if (intent?.action == ACTION_HIDE_FLOATING) config.floatingEnabled = false
+        RecognitionHistory.record(this, "运行状态", "自动识别${if (config.autoSkip) "开启" else "暂停"}；悬浮窗${if (config.floatingEnabled) "开启" else "关闭"}")
         // 暂停立刻作废正在查询的结果，避免队列清理之前仍发送请求。
         if (!config.autoSkip) {
             interactionGeneration.incrementAndGet()
@@ -550,7 +561,8 @@ class FloatingButtonService : Service() {
         // 不保留旧节点；发送前从当前窗口重新取得证据与作用域。
         val actual = SkipAdAccessibilityService.observeEvidence(target)
         if (isAuto && (actual?.isAd != true || actual.scope != expected?.scope ||
-            actual.confidence != expected.confidence)) {
+            actual.confidence != expected.confidence || actual.ruleKey != expected.ruleKey ||
+            ConfigManager.get(this).adRules.snapshot().version != actual.rulesVersion)) {
             adGate.cancelCandidate()
             return
         }
@@ -560,9 +572,10 @@ class FloatingButtonService : Service() {
         }
         val now = SystemClock.uptimeMillis()
         val result = MediaControlService.skipDouyinAd(this, target) {
-            canContinueSkip(isAuto, generation)
+            canContinueSkip(isAuto, generation) && (!isAuto || ConfigManager.get(this).adRules.snapshot().version == actual?.rulesVersion)
         }
         if (result == MediaControlService.Companion.SkipResult.FAILED) {
+            RecognitionHistory.record(this, "发送失败", "未找到可用的媒体会话或广告跳过按钮", actual, target)
             adGate.markFailed(now)
             if (!isAuto) showSkipMessage("未找到可用的播放会话或跳过按钮")
             return
@@ -570,10 +583,11 @@ class FloatingButtonService : Service() {
         if (actual?.isAd == true) {
             adGate.markSent(actual, now)
             pendingSkip = PendingSkip(target, actual.scope, now, isAuto,
-                result == MediaControlService.Companion.SkipResult.CLICKED)
+                result == MediaControlService.Companion.SkipResult.CLICKED, actual)
             scheduleDetection(100L, "verify")
         }
         Log.i(TAG, "AdPipeline request t=$now automatic=$isAuto confidence=${actual?.confidence}")
+        RecognitionHistory.record(this, "已发送请求", "${if (isAuto) "自动" else "手动"}提交跳过请求，等待画面确认", actual, target)
         if (!isAuto) showSkipMessage("已发送跳过请求")
     }
 
@@ -593,6 +607,13 @@ class FloatingButtonService : Service() {
             return
         }
         val observation = SkipAdAccessibilityService.observeEvidence(pending.target)
+        if (ConfigManager.get(this).adRules.snapshot().version != pending.evidence.rulesVersion ||
+            (observation != null && observation.rulesVersion != pending.evidence.rulesVersion)) {
+            RecognitionHistory.record(this, "确认中止", "规则已变化，本次请求不累计确认次数", pending.evidence)
+            pendingSkip = null
+            adGate.cancelCandidate()
+            return
+        }
         if (observation == null || !observation.inPlayer || observation.scope != pending.scope) {
             pendingSkip = null
             adGate.cancelCandidate()
@@ -609,6 +630,7 @@ class FloatingButtonService : Service() {
             val since = pending.clearSince ?: now.also { pending.clearSince = it }
             if (now - since >= 800L) {
                 ConfigManager.get(this).incrementSkipCount()
+                RecognitionHistory.record(this, "已确认跳过", "同一播放器内广告稳定消失", pending.evidence)
                 Log.i(TAG, "AdPipeline confirmed t=$now request_to_confirm_ms=${now - pending.startedAt}")
                 pendingSkip = null
                 return
@@ -623,6 +645,7 @@ class FloatingButtonService : Service() {
             }
         }
         if (now - pending.startedAt >= 6000L) {
+            RecognitionHistory.record(this, "未确认跳过", "已发送请求，但未观察到广告稳定消失", pending.evidence)
             Log.i(TAG, "AdPipeline unconfirmed t=$now")
             pendingSkip = null
         }
@@ -637,6 +660,15 @@ class FloatingButtonService : Service() {
         }
         if (!SkipAdAccessibilityService.isRunning() || target == null ||
             !ConfigManager.get(this).isAppEnabled(target)) {
+            val unavailable = when {
+                !SkipAdAccessibilityService.isRunning() -> "无障碍尚未连接，无法自动识别"
+                target == null -> "当前窗口不可读，未执行识别"
+                else -> "当前不在已启用的目标应用，未执行识别"
+            }
+            if (lastEvidenceSummary != unavailable) {
+                lastEvidenceSummary = unavailable
+                RecognitionHistory.record(this, "识别状态", unavailable)
+            }
             adGate.cancelCandidate()
             return
         }
@@ -651,9 +683,11 @@ class FloatingButtonService : Service() {
         if (summary != lastEvidenceSummary) {
             lastEvidenceSummary = summary
             Log.i(TAG, "AdPipeline observation t=$now scan_ms=${now - start} $summary")
+            RecognitionHistory.record(this, "识别结果", observation?.reason?.substringBefore(" episode=") ?: "当前窗口不可读或不属于目标应用", observation, target)
         }
         val decision = adGate.evaluate(observation, now)
         if (decision.newCandidate) {
+            RecognitionHistory.record(this, "等待二次确认", "检测到广告证据，复核后再发送请求", observation, target)
             Log.i(TAG, "AdPipeline candidate t=$now cause=$cause scan_ms=${now - start} " +
                 "confidence=${observation?.confidence} reason=${observation?.reason}")
         }
