@@ -126,7 +126,7 @@ jobs:
           if (-not $verified) { throw 'Public download verification failed.' }
           "Verified $($actual.versionName): $base/$($actual.apk)" | Out-File -LiteralPath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
       - uses: actions/upload-artifact@v4
-        if: success()
+        if: success() || failure()
         with:
           name: android-release
           path: |

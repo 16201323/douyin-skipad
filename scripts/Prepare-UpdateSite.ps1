@@ -33,7 +33,10 @@ $expectedSignerFile = Join-Path $workspaceRoot '.github/release-signing-sha256.t
 if (Test-Path -LiteralPath $expectedSignerFile) {
     $expectedSigner = (Get-Content -LiteralPath $expectedSignerFile -Raw).Trim().ToLowerInvariant()
     $actualSigner = [regex]::Match($signatureOutput, 'Signer #1 certificate SHA-256 digest: ([0-9a-fA-F]{64})').Groups[1].Value.ToLowerInvariant()
-    if ($actualSigner -ne $expectedSigner) { throw 'APK signer does not match the existing phone installation signer.' }
+    if ($actualSigner -ne $expectedSigner) {
+        $digestLines = ([regex]::Matches($signatureOutput, '(?im)^.*SHA-256.*$') | ForEach-Object { $_.Value }) -join '; '
+        throw "APK signer mismatch. Expected certificate: $expectedSigner; parsed certificate: $actualSigner; public digest output: $digestLines"
+    }
 }
 $badging = (& $aapt dump xmltree $apk AndroidManifest.xml) -join "`n"
 if ($LASTEXITCODE -ne 0) { throw 'Cannot read APK metadata.' }
