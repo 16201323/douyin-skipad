@@ -19,9 +19,13 @@ import java.util.concurrent.TimeUnit
 /** 仅测试包：捕获 Activity 自身视图，排除系统悬浮窗，不修改手机全局主题。 */
 class UiPreviewInstrumentation : Instrumentation() {
     private var verifyUpdate = false
+    private var refreshOnly = false
+    private var probeDownload = false
     override fun onCreate(arguments: Bundle?) {
         super.onCreate(arguments)
         verifyUpdate = arguments?.getString("verify_update") == "true"
+        refreshOnly = arguments?.getString("refresh_only") == "true"
+        probeDownload = arguments?.getString("probe_download") == "true"
         start()
     }
 
@@ -101,8 +105,8 @@ class UiPreviewInstrumentation : Instrumentation() {
             return requireNotNull(result)
         }
         try {
-            var state = runOnUpdateThread { engine.check(true) }
-            val deadline = SystemClock.uptimeMillis() + 45_000
+            var state = runOnUpdateThread { if (refreshOnly) engine.refresh() else engine.check(true) }
+            val deadline = SystemClock.uptimeMillis() + if (refreshOnly) 0 else 45_000
             while (state.phase in listOf(UpdatePhase.QUEUED, UpdatePhase.DOWNLOADING) && SystemClock.uptimeMillis() < deadline) {
                 sendStatus(1, Bundle().apply { putString("stream", "update ${state.phase} ${state.downloaded}/${state.total}") })
                 SystemClock.sleep(2000)
@@ -113,6 +117,23 @@ class UiPreviewInstrumentation : Instrumentation() {
             output.putString("phase", state.phase.name)
             output.putString("message", state.message)
             output.putString("release", state.release?.version?.toString())
+            if (engine.store.downloadId >= 0) {
+                val manager = targetContext.getSystemService(android.app.DownloadManager::class.java)
+                manager.query(android.app.DownloadManager.Query().setFilterById(engine.store.downloadId)).use { cursor ->
+                    if (cursor != null && cursor.moveToFirst()) {
+                        output.putInt("download_status", cursor.getInt(cursor.getColumnIndexOrThrow(android.app.DownloadManager.COLUMN_STATUS)))
+                        output.putInt("download_reason", cursor.getInt(cursor.getColumnIndexOrThrow(android.app.DownloadManager.COLUMN_REASON)))
+                    }
+                }
+            }
+            if (probeDownload && state.release != null) runCatching {
+                val connection = java.net.URL(state.release!!.url).openConnection() as java.net.HttpURLConnection
+                try {
+                    connection.requestMethod = "HEAD"; connection.connectTimeout = 10000; connection.readTimeout = 10000
+                    output.putInt("app_http_status", connection.responseCode)
+                    output.putString("app_http_host", connection.url.host)
+                } finally { connection.disconnect() }
+            }.onFailure { output.putString("app_http_error", it.javaClass.simpleName) }
             if (state.phase == UpdatePhase.READY) {
                 val file = engine.fileForInstall()
                 val hash = MessageDigest.getInstance("SHA-256").digest(file.readBytes()).joinToString("") { "%02x".format(it) }
