@@ -160,4 +160,30 @@ class EditableRulesTest {
         shadowOf(root).addChild(node("产品介绍".repeat(200) + "广告", Rect(40, 2350, 1100, 2520), "desc"))
         assertTrue(AdDetector.inspectFocused(root, pkg)!!.isAd)
     }
+    @Test fun renamedPlayerIdsWithAnExistingDescriptionStillExposeLiveContext() {
+        val root = node("", Rect(0, 0, 1240, 2772))
+        shadowOf(root).addChild(node("退出短剧", Rect(189, 185, 413, 262), "b5i"))
+        shadowOf(root).addChild(node("短剧 · 示例剧名", Rect(161, 2658, 575, 2720), "crf"))
+        shadowOf(root).addChild(node("直播中", Rect(40, 2280, 245, 2360)))
+        shadowOf(root).addChild(node("点击进入直播间", Rect(320, 1850, 920, 2010)))
+        shadowOf(root).addChild(node("普通商品介绍", Rect(42, 2249, 914, 2406), "desc"))
+        assertTrue(AdDetector.inspectFocused(root, pkg)?.isAd == true)
+    }
+    @Test fun renamedExitAnchorRecognizesCaptionAdsAndNormalContentSeparately() {
+        for ((text, expected) in listOf("商品介绍 展开广告" to true, "普通剧情介绍" to false, "这个视频不是广告" to false)) {
+            val root = node("", Rect(0, 0, 1240, 2772))
+            shadowOf(root).addChild(node("退出短剧", Rect(189, 185, 413, 262), "b5i"))
+            shadowOf(root).addChild(node("短剧 · 测试剧名", Rect(161, 2658, 575, 2720), "crf"))
+            shadowOf(root).addChild(node(text, Rect(42, 2249, 914, 2406), "desc"))
+            val observation = AdDetector.inspectFocused(root, pkg)
+            assertTrue("改版后的正常播放器也应能确认上下文", observation?.inPlayer == true)
+            assertEquals(text, expected, observation!!.isAd)
+        }
+    }
+    @Test fun exitWordsInBodyOrCommentsDoNotCreateAPlayerAnchor() {
+        val root = node("", Rect(0, 0, 1240, 2772))
+        shadowOf(root).addChild(node("退出短剧", Rect(100, 1400, 500, 1500), "random"))
+        shadowOf(root).addChild(node("商品介绍 展开广告", Rect(42, 2249, 914, 2406), "desc"))
+        assertFalse(AdDetector.inspectFocused(root, pkg)!!.isAd)
+    }
 }

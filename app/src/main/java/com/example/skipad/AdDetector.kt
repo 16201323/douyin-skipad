@@ -40,7 +40,9 @@ internal object AdDetector {
             selected.addAll(root.findAccessibilityNodeInfosByViewId("$target:id/$id").orEmpty().take(20))
         }
         val knownLayout = selected.any { it.isVisibleToUser }
-        val keywords = ((if (knownLayout) emptyList() else listOf("选集", "全集", "第", "短剧")) + rules.queries).distinct()
+        // 混淆 ID 会随抖音版本变化；介绍栏仍存在不代表整个布局仍相同。
+        val keywords = (listOf("退出短剧", "短剧") +
+            (if (knownLayout) emptyList() else listOf("选集", "全集", "第")) + rules.queries).distinct()
         for (keyword in keywords) {
             val nodes = root.findAccessibilityNodeInfosByText(keyword).orEmpty()
             if (nodes.size > 60) return null
@@ -119,7 +121,11 @@ internal object AdDetector {
                         if (text == "选集" || text == "全集") selectionFound = true
                         if (text == "短剧" || text == "短剧播放器" ||
                             (text.length <= 120 && dramaTitle.containsMatchIn(text))) dramaFound = true
-                        if (id == "b4=" && text == "退出短剧") exitDramaFound = true
+                        if (text == "退出短剧" && bounds.top >= screen.top &&
+                            bounds.bottom <= screen.top + screen.height() * 0.18f &&
+                            bounds.left <= screen.left + screen.width() * 0.5f &&
+                            bounds.width() <= screen.width() * 0.6f &&
+                            bounds.height() <= screen.height() * 0.12f) exitDramaFound = true
                         if (text.length <= 120 && dramaTitle.containsMatchIn(text) &&
                             bounds.top >= screen.top + screen.height() * 0.8f) dramaFooterFound = true
                         if (text == "直播中" && bounds.top >= screen.top + screen.height() * 0.65f &&
