@@ -58,6 +58,10 @@ android {
 
     testOptions {
         unitTests.isIncludeAndroidResources = true
+        unitTests.all {
+            it.systemProperty("robolectric.dependency.repo.url", "https://repo.maven.apache.org/maven2")
+            it.testLogging.exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
+        }
     }
 
     // APK 输出文件命名：统一用项目名 douyin-skipad，便于识别与分发

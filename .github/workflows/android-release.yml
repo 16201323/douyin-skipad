@@ -135,6 +135,8 @@ jobs:
           path: |
             build/published/douyin-skipad-release.apk
             build/update-site/update.json
+            app/build/test-results/testDebugUnitTest/
+            app/build/reports/tests/testDebugUnitTest/
           retention-days: 14
       - name: Remove temporary signing material
         if: always()
