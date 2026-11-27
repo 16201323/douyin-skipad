@@ -39,10 +39,8 @@ internal object AdDetector {
         for (id in listOf("desc", "cq-", "b4=")) {
             selected.addAll(root.findAccessibilityNodeInfosByViewId("$target:id/$id").orEmpty().take(20))
         }
-        val knownLayout = selected.any { it.isVisibleToUser }
-        // 混淆 ID 会随抖音版本变化；介绍栏仍存在不代表整个布局仍相同。
-        val keywords = (listOf("退出短剧", "短剧") +
-            (if (knownLayout) emptyList() else listOf("选集", "全集", "第")) + rules.queries).distinct()
+        // 控件 ID 可跨版本保留或改名，介绍栏存在不能代替播放器上下文查询。
+        val keywords = (listOf("退出短剧", "短剧", "选集", "全集", "第") + rules.queries).distinct()
         for (keyword in keywords) {
             val nodes = root.findAccessibilityNodeInfosByText(keyword).orEmpty()
             if (nodes.size > 60) return null

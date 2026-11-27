@@ -61,6 +61,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var pageHost: FrameLayout
     private lateinit var navigation: LinearLayout
     private var selectedPage = 0
+    private lateinit var toolbar: LinearLayout
     private var draftButtonText: String? = null
     private var floatingPreview: FloatingView? = null
     private var imageOptions: View? = null
@@ -336,11 +337,7 @@ class MainActivity : AppCompatActivity() {
             else flags or View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
         window.decorView.systemUiVisibility = flags
         val shell = ui.column().apply { setBackgroundColor(ui.background) }
-        val toolbar = ui.row().apply { setPadding(ui.dp(22), ui.dp(18), ui.dp(22), ui.dp(12)) }
-        toolbar.addView(ui.icon(R.drawable.ic_skip, size = 22))
-        toolbar.addView(ui.label("抖音跳广告助手", 14f, medium = true),
-            LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = ui.dp(10) })
-        toolbar.addView(ui.badge("本地工具"))
+        toolbar = ui.row().apply { setPadding(ui.dp(16), ui.dp(8), ui.dp(16), ui.dp(8)) }
         shell.addView(toolbar)
         pageHost = FrameLayout(this)
         shell.addView(pageHost, LinearLayout.LayoutParams(-1, 0, 1f))
@@ -373,8 +370,22 @@ class MainActivity : AppCompatActivity() {
         }
         scroll.addView(content)
         pageHost.addView(scroll, FrameLayout.LayoutParams(-1, -1))
+        updateToolbar()
         buildNavigation()
+        navigation.visibility = if (selectedPage == 3) View.GONE else View.VISIBLE
         refreshRuntimeUi()
+    }
+
+    private fun updateToolbar() {
+        toolbar.removeAllViews()
+        if (selectedPage == 3) {
+            toolbar.addView(ui.backButton { showPage(2) }.apply { tag = "permissions_back" })
+            toolbar.addView(ui.label("权限与连接", 18f, medium = true), LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = ui.dp(8) })
+        } else {
+            toolbar.addView(ui.icon(R.drawable.ic_skip, size = 22))
+            toolbar.addView(ui.label("抖音跳广告助手", 15f, medium = true), LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = ui.dp(10) })
+            toolbar.addView(ui.badge("本地工具"))
+        }
     }
 
     private fun buildNavigation() {
@@ -409,10 +420,10 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun heading(parent: LinearLayout, title: String, description: String) {
-        parent.addView(ui.label(title, 27f, medium = true))
+        parent.addView(ui.label(title, 22f, medium = true))
         parent.addView(ui.space(8))
         parent.addView(ui.label(description, 13f, ui.secondary))
-        parent.addView(ui.space(24))
+        parent.addView(ui.space(16))
     }
 
     private fun cardTitle(card: LinearLayout, title: String, description: String? = null) {
@@ -425,26 +436,25 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun buildHome(parent: LinearLayout) {
-        heading(parent, "追剧，更从容。", "少些打扰，把时间留给喜欢的故事。")
+        heading(parent, "运行概览", "进入抖音，自动识别支持的广告。")
         val hero = ui.card(ui.hero)
         val top = ui.row()
         statusBadge = ui.badge("尚未启动", false)
         top.addView(statusBadge)
         top.addView(View(this), LinearLayout.LayoutParams(0, 1, 1f))
-        top.addView(ui.icon(R.drawable.ic_skip, size = 32))
         hero.addView(top)
-        hero.addView(ui.space(18))
-        statusTitle = ui.label("准备好再出发", 23f, medium = true).apply { tag = "runtime_status_title" }
+        hero.addView(ui.space(10))
+        statusTitle = ui.label("准备好再出发", 19f, medium = true).apply { tag = "runtime_status_title" }
         statusDetail = ui.label("自动识别广告，无需显示悬浮按钮。", 13f, ui.secondary)
         hero.addView(statusTitle)
         hero.addView(ui.space(9))
         hero.addView(statusDetail)
-        hero.addView(ui.space(20))
+        hero.addView(ui.space(4))
         val automaticRow = ui.row().apply { tag = "service_toggle" }
         val automaticWords = ui.column()
         automaticWords.addView(ui.label("自动跳过", 17f, medium = true))
         automaticWords.addView(ui.space(5))
-        automaticWords.addView(ui.label("记住开关状态，无需开启悬浮窗", 12f, ui.secondary))
+        automaticWords.addView(ui.label("识别广告后自动尝试跳过", 12f, ui.secondary))
         automaticRow.addView(automaticWords, LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = ui.dp(12) })
         automaticToggle = SwitchCompat(this).apply {
             tag = "auto_skip_toggle"; contentDescription = "自动跳过"
@@ -458,20 +468,20 @@ class MainActivity : AppCompatActivity() {
         }
         automaticToggle!!.setOnCheckedChangeListener(automaticToggleListener)
         automaticRow.addView(automaticToggle)
-        hero.addView(ui.space(14))
+        hero.addView(ui.space(8))
         hero.addView(ui.button("检查权限") { showPage(3) }.apply { tag = "check_permissions" }, LinearLayout.LayoutParams(-1, -2))
         parent.addView(hero)
 
         val stats = ui.card()
         val statsTitle = ui.row()
         statsTitle.addView(ui.label("已确认跳过", 14f, medium = true), LinearLayout.LayoutParams(0, -2, 1f))
-        statsTitle.addView(ui.label("每一次，少点等待", 11f, ui.secondary))
+        statsTitle.addView(ui.label("仅统计确认成功", 11f, ui.secondary))
         stats.addView(statsTitle)
         stats.addView(ui.space(18))
         val values = ui.row()
         fun metric(title: String): Pair<LinearLayout, TextView> {
             val column = ui.column()
-            val value = ui.label("0", 34f, medium = true)
+            val value = ui.label("0", 28f, medium = true)
             column.addView(value)
             column.addView(ui.space(5))
             column.addView(ui.label(title, 12f, ui.secondary))
@@ -492,7 +502,7 @@ class MainActivity : AppCompatActivity() {
         val words = ui.column()
         words.addView(ui.label("显示悬浮窗", 17f, medium = true))
         words.addView(ui.space(5))
-        words.addView(ui.label("可选的手动按钮，关闭不影响自动跳过", 12f, ui.secondary))
+        words.addView(ui.label("可选手动按钮，独立控制", 12f, ui.secondary))
         row.addView(words, LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = ui.dp(12) })
         val toggle = SwitchCompat(this).apply {
             isChecked = config.floatingEnabled
@@ -512,15 +522,7 @@ class MainActivity : AppCompatActivity() {
         parent.addView(automatic)
         parent.addView(stats)
 
-        val readiness = ui.card()
-        val readinessHeader = ui.row()
-        readinessHeader.addView(ui.label("运行准备", 14f, medium = true), LinearLayout.LayoutParams(0, -2, 1f))
-        readiness.addView(readinessHeader)
-        readinessText = ui.label("", 12f, ui.secondary)
-        readiness.addView(ui.space(9)); readiness.addView(readinessText)
-        parent.addView(readiness)
-        parent.addView(ui.label("自动跳过可独立运行；悬浮按钮可轻点、长按和拖动。", 12f, ui.secondary).apply { gravity = Gravity.CENTER })
-        parent.addView(ui.space(10))
+        parent.addView(ui.label("支持大窗口及可操作小窗；失焦时也可识别。", 11f, ui.secondary).apply { gravity = Gravity.CENTER })
     }
 
     private fun buildAppearance(parent: LinearLayout) {
@@ -569,7 +571,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun buildSettings(parent: LinearLayout) {
-        heading(parent, "按你的节奏。", "管理应用、权限与运行偏好。")
+        heading(parent, "设置", "应用、权限与运行偏好")
         val appearance = ui.card()
         cardTitle(appearance, "界面主题", "选择后立即生效，下次打开会保留。")
         val choices = ui.row()
@@ -606,26 +608,26 @@ class MainActivity : AppCompatActivity() {
         parent.addView(apps)
 
         val recognition = ui.card()
-        cardTitle(recognition, "广告识别", "维护关键词，查看最近的识别与跳过结果。")
-        recognition.addView(ui.button("管理识别规则", true) {
+        cardTitle(recognition, "识别与诊断")
+        recognition.addView(ui.navigationRow("识别规则", "维护广告提示关键词") {
             startActivity(Intent(this, RulesActivity::class.java))
         }.apply { tag = "manage_rules" }, LinearLayout.LayoutParams(-1, -2))
-        recognition.addView(ui.space(10))
-        recognition.addView(ui.button("最近识别记录") {
+        recognition.addView(ui.divider())
+        recognition.addView(ui.navigationRow("运行日志", "查看识别状态、跳过结果及问题详情") {
             startActivity(Intent(this, RecognitionHistoryActivity::class.java))
         }.apply { tag = "recognition_history" }, LinearLayout.LayoutParams(-1, -2))
         parent.addView(recognition)
 
         val permissions = ui.card()
-        val permissionSummary = ui.label("", 12f, ui.secondary)
-        permissions.addView(permissionSummary)
+        val permissionEntry = ui.navigationRow("权限与连接", "检查授权状态") { showPage(3) }.apply { tag = "permissions_details" }
+        val permissionSummary = permissionEntry.findViewWithTag<TextView>("navigation_summary")
         permissionRefreshers.add {
             permissionSummary.text = if (!isNotificationListenerEnabled()) "待开启通知使用权"
                 else if (!isAccessibilityServiceEnabled()) "待开启无障碍服务"
                 else if (!SkipAdAccessibilityService.isRunning()) "已授权 · 等待服务连接"
                 else "必需授权已就绪 · 无障碍已连接"
         }
-        permissions.addView(ui.button("权限与连接 ›") { showPage(3) }.apply { tag = "permissions_details" }, LinearLayout.LayoutParams(-1, -2))
+        permissions.addView(permissionEntry)
         parent.addView(permissions)
 
         val detection = ui.card()
@@ -639,7 +641,7 @@ class MainActivity : AppCompatActivity() {
         val version = packageManager.getPackageInfo(packageName, 0).versionName ?: ""
         about.addView(ui.label("抖音跳广告助手  ·  $version", 12f, ui.secondary))
         about.addView(ui.space(12))
-        about.addView(ui.button("软件更新", true) { startActivity(Intent(this, AppUpdateActivity::class.java)) }
+        about.addView(ui.navigationRow("软件更新", "检查新版与历史版本") { startActivity(Intent(this, AppUpdateActivity::class.java)) }
             .apply { tag = "app_update" }, LinearLayout.LayoutParams(-1, -2))
         about.addView(ui.space(8))
         about.addView(ui.label("识别存在覆盖限制，未自动跳过时可手动点击悬浮窗。", 12f, ui.secondary))
@@ -652,9 +654,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun buildPermissionDetails(parent: LinearLayout) {
-        parent.addView(ui.button("返回设置") { showPage(2) }.apply { tag = "permissions_back" })
         val permissions = ui.card()
-        cardTitle(permissions, "权限与连接", "系统授权与服务连接状态分开展示。")
+        cardTitle(permissions, "授权状态", "必需权限就绪并连接后，自动识别即可运行。")
         permissionRow(permissions, "通知使用权", "自动跳过必需 · 获取播放器控制会话", "notification",
             { isNotificationListenerEnabled() }, { openNotificationListenerSettings() })
         permissionRow(permissions, "悬浮窗", "可选 · 仅显示悬浮按钮时需要", "overlay",

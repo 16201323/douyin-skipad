@@ -144,13 +144,13 @@ class EditableRulesTest {
     }
 
     @Test fun historyIsBoundedPersistentAndClearable() {
-        repeat(120) { index -> RecognitionHistory.record(context, "测试状态", "记录$index", now = index.toLong()) }
+        repeat(RecognitionHistory.LIMIT + 20) { index -> RecognitionHistory.record(context, "测试状态", "记录$index", now = index.toLong()) }
         val entries = RecognitionHistory.load(context)
-        assertEquals(100, entries.size)
+        assertEquals(RecognitionHistory.LIMIT, entries.size)
         assertEquals("记录20", entries.first().message)
-        assertEquals("记录119", entries.last().message)
-        RecognitionHistory.record(context, "测试状态", "记录119", now = 120L)
-        assertEquals(100, RecognitionHistory.load(context).size)
+        assertEquals("记录${RecognitionHistory.LIMIT + 19}", entries.last().message)
+        RecognitionHistory.record(context, "测试状态", "记录${RecognitionHistory.LIMIT + 19}", now = (RecognitionHistory.LIMIT + 20).toLong())
+        assertEquals(RecognitionHistory.LIMIT, RecognitionHistory.load(context).size)
         RecognitionHistory.clear(context)
         assertTrue(RecognitionHistory.load(context).isEmpty())
     }

@@ -171,6 +171,7 @@ class FloatingButtonService : Service() {
             adGate.cancelCandidate()
             pendingSkip = null
             Log.e(TAG, "广告检测失败，不执行跳过", e)
+            RecognitionHistory.record(this, "检测异常", "检测中发生 ${e.javaClass.simpleName}，本次未执行跳过")
         }
     }
 
@@ -199,6 +200,7 @@ class FloatingButtonService : Service() {
                 runDetection("poll")
             } catch (e: Exception) {
                 Log.e(TAG, "悬浮窗保活检测异常", e)
+                RecognitionHistory.record(this@FloatingButtonService, "检测异常", "运行状态检查发生 ${e.javaClass.simpleName}，将继续重试")
             }
 
             // 无论是否异常，都继续下一轮轮询；间隔取用户设置的「广告检测间隔」
@@ -563,6 +565,7 @@ class FloatingButtonService : Service() {
         if (isAuto && (actual?.isAd != true || actual.scope != expected?.scope ||
             actual.confidence != expected.confidence || actual.ruleKey != expected.ruleKey ||
             ConfigManager.get(this).adRules.snapshot().version != actual.rulesVersion)) {
+            RecognitionHistory.record(this, "复核取消", "广告证据、窗口或规则已变化，取消本次请求并继续检测", actual, target)
             adGate.cancelCandidate()
             return
         }
@@ -589,7 +592,8 @@ class FloatingButtonService : Service() {
             scheduleDetection(100L, "verify")
         }
         Log.i(TAG, "AdPipeline request t=$now automatic=$isAuto confidence=${actual?.confidence}")
-        RecognitionHistory.record(this, "已发送请求", "${if (isAuto) "自动" else "手动"}提交跳过请求，等待画面确认", actual, target)
+        RecognitionHistory.record(this, "已发送请求", if (actual?.isAd == true) "${if (isAuto) "自动" else "手动"}提交跳过请求，等待画面确认"
+            else "手动请求已发送；当前无可确认的广告证据，不计入成功次数", actual, target)
         if (!isAuto) showSkipMessage("已发送跳过请求")
     }
 
@@ -604,6 +608,7 @@ class FloatingButtonService : Service() {
         val now = SystemClock.uptimeMillis()
         if (!ConfigManager.get(this).isAppEnabled(pending.target) ||
             ForegroundAppResolver.current(this) != pending.target) {
+            RecognitionHistory.record(this, "确认中止", "目标已离开可操作窗口或被禁用，本次请求未计为成功", pending.evidence)
             pendingSkip = null
             adGate.cancelCandidate()
             return
@@ -617,6 +622,12 @@ class FloatingButtonService : Service() {
             return
         }
         if (observation == null || !observation.inPlayer || observation.scope != pending.scope) {
+            val reason = when {
+                observation == null -> "无法重新读取广告证据"
+                !observation.inPlayer -> "播放器上下文不足或面板遮挡"
+                else -> "播放器窗口已变化"
+            }
+            RecognitionHistory.record(this, "确认中止", "$reason，本次请求未计为成功", observation ?: pending.evidence)
             pendingSkip = null
             adGate.cancelCandidate()
             return

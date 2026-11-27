@@ -28,8 +28,8 @@ internal abstract class SettingsPageActivity : AppCompatActivity() {
     protected fun page(title: String) {
         val shell = ui.column().apply { setBackgroundColor(ui.background); setPadding(ui.dp(20), ui.dp(12), ui.dp(20), 0) }
         val header = ui.row()
-        header.addView(ui.label(title, 23f, medium = true), LinearLayout.LayoutParams(0, -2, 1f))
-        header.addView(ui.button("返回") { finish() })
+        header.addView(ui.backButton { finish() })
+        header.addView(ui.label(title, 20f, medium = true), LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = ui.dp(8) })
         shell.addView(header)
         shell.addView(ui.space(16))
         body = ui.column().apply { setPadding(0, 0, 0, ui.dp(16)) }

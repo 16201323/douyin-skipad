@@ -116,6 +116,7 @@ class SkipAdAccessibilityService : AccessibilityService() {
 
     override fun onInterrupt() {
         Log.d(TAG, "无障碍服务中断")
+        RecognitionHistory.record(this, "服务连接", "系统中断无障碍服务，请检查连接状态")
     }
 
     override fun onUnbind(intent: android.content.Intent?): Boolean {

@@ -124,7 +124,7 @@ class AutoSkipControlTest {
     @Test @org.robolectric.annotation.GraphicsMode(org.robolectric.annotation.GraphicsMode.Mode.NATIVE)
     @Config(qualifiers = "w360dp-h800dp-xxhdpi")
     fun renderConsolidatedPagesForReview() {
-        val folder = java.io.File("../build/ui-1.5.3").apply { mkdirs() }
+        val folder = java.io.File("../build/ui-1.5.5").apply { mkdirs() }
         for (mode in listOf(1, 2)) {
             ConfigManager.get(context).themeMode = mode
             val controller = Robolectric.buildActivity(MainActivity::class.java).create()

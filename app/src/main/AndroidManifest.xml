@@ -28,6 +28,10 @@
     <!-- Android 14+ specialUse 类型：悬浮窗不属于媒体播放等标准类型，用 specialUse 并在 service 标签内声明用途 -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
 
+    <queries>
+        <package android:name="com.ss.android.ugc.aweme" />
+        <package android:name="com.ss.android.ugc.aweme.lite" />
+    </queries>
     <application
         android:allowBackup="true"
         android:icon="@android:drawable/ic_media_next"

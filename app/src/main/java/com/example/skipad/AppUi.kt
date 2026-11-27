@@ -29,7 +29,7 @@ internal class AppUi(private val context: Context) {
 
     fun dp(value: Int) = (value * context.resources.displayMetrics.density + 0.5f).toInt()
 
-    fun rounded(color: Int, radius: Int = 22, stroke: Boolean = false) = GradientDrawable().apply {
+    fun rounded(color: Int, radius: Int = 18, stroke: Boolean = false) = GradientDrawable().apply {
         setColor(color)
         cornerRadius = dp(radius).toFloat()
         if (stroke) setStroke(dp(1), line)
@@ -49,8 +49,8 @@ internal class AppUi(private val context: Context) {
 
     fun card(color: Int = surface) = column().apply {
         background = rounded(color)
-        setPadding(dp(20), dp(20), dp(20), dp(20))
-        layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(16) }
+        setPadding(dp(16), dp(16), dp(16), dp(16))
+        layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(12) }
     }
 
     fun space(height: Int) = View(context).apply { layoutParams = LinearLayout.LayoutParams(1, dp(height)) }
@@ -64,8 +64,8 @@ internal class AppUi(private val context: Context) {
         button.isAllCaps = false
         button.textSize = 14f
         button.typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
-        button.minimumHeight = dp(50)
-        button.minHeight = dp(50)
+        button.minimumHeight = dp(48)
+        button.minHeight = dp(48)
         button.minimumWidth = 0
         button.minWidth = 0
         button.setPadding(dp(16), dp(10), dp(16), dp(10))
@@ -74,6 +74,32 @@ internal class AppUi(private val context: Context) {
     fun button(value: String, primary: Boolean = false, action: () -> Unit) = AppCompatButton(context).apply {
         text = value
         styleButton(this, primary)
+        setOnClickListener { action() }
+    }
+
+    fun backButton(action: () -> Unit) = button("‹", action = action).apply {
+        contentDescription = "返回"
+        textSize = 28f
+        background = RippleDrawable(ColorStateList.valueOf(accentSoft), rounded(this@AppUi.background, 12), null)
+        setPadding(0, 0, 0, 0)
+        layoutParams = LinearLayout.LayoutParams(dp(48), dp(48))
+    }
+
+    fun textButton(title: String, action: () -> Unit) = button(title, action = action).apply {
+        background = RippleDrawable(ColorStateList.valueOf(accentSoft), rounded(android.graphics.Color.TRANSPARENT, 12), null)
+        setTextColor(accent)
+    }
+
+    fun navigationRow(title: String, description: String? = null, action: () -> Unit) = row().apply {
+        minimumHeight = dp(52)
+        setPadding(0, dp(10), 0, dp(10))
+        isClickable = true; isFocusable = true
+        background = RippleDrawable(ColorStateList.valueOf(accentSoft), rounded(surface, 10), null)
+        val words = column()
+        words.addView(label(title, 14f, medium = true))
+        if (description != null) { words.addView(space(5)); words.addView(label(description, 11f, secondary).apply { tag = "navigation_summary" }) }
+        addView(words, LinearLayout.LayoutParams(0, -2, 1f))
+        addView(label("›", 22f, secondary))
         setOnClickListener { action() }
     }
 
